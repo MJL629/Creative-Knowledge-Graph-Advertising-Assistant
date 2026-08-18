@@ -85,21 +85,27 @@ export async function callMockJson<T>(messages: ChatMessage[]): Promise<T> {
     // 从 user message 里提取目标分类和数量
     const categoryMatch = user.match(/"targetCategory"\s*:\s*"(\w+)"/);
     const countMatch = user.match(/"candidateCount"\s*:\s*(\d)/);
+    const parentMatch = user.match(/"expected_parent_ref"\s*:\s*"([^"]+)"/);
+    const subjectMatch = user.match(/"narrativeSubjectIds"\s*:\s*\[\s*"([^"]+)"/);
+    const featureMatch = user.match(/"productFeatureRefs"\s*:\s*\[\s*"([^"]+)"/);
     const category = categoryMatch?.[1] || "story_event";
     const count = Number(countMatch?.[1] || 2);
+    const parentRef = parentMatch?.[1] || "mock-parent";
+    const actorRefs = subjectMatch?.[1] ? [subjectMatch[1]] : [];
+    const productFeatureRefs = featureMatch?.[1] ? [featureMatch[1]] : [];
     const nodes = [];
     for (let i = 1; i <= count; i++) {
       nodes.push({
         clientKey: `mock-grow-${i}`,
-        parentRef: "mock-parent",
+        parentRef,
         category,
         subtype: "mock 生长",
         title: `${category === "story_event" ? "后续事件" : category === "motivation_conflict" ? "新增阻碍" : "补充元素"} ${i}`,
         description: `mock 生成的第 ${i} 个候选节点，围绕当前节点继续发散。`,
         attributes: { 来源: "mock", 生长模式: "deepen" },
         rationale: "mock · 受控生长",
-        actorRefs: [],
-        productFeatureRefs: [],
+        actorRefs,
+        productFeatureRefs,
         growthMode: "deepen",
         subjectContinuity: { status: "anchored", score: 0.8, note: "mock · 主体保持" },
       });

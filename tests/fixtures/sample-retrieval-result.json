@@ -1,0 +1,18 @@
+{
+  "query": "水枪节短视频开场钩子",
+  "hits": [
+    {
+      "id": "mock_case_water_battle_hook",
+      "title": "水枪对战开场钩子",
+      "content": "用明确倒计时、即时挑战和可视化胜负标志制造前三秒注意力。",
+      "score": 0.92,
+      "metadata": {
+        "genre": "short-video",
+        "pattern": "countdown_challenge"
+      },
+      "source": {
+        "name": "Mock Creative Method Library"
+      }
+    }
+  ]
+}

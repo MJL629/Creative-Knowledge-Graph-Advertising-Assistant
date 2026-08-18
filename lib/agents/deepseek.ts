@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { getRuntimeEnv } from "../runtime/env";
 import { callMockJson, type ChatMessage as MockMessage } from "./mock-llm";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
@@ -21,7 +21,7 @@ type DeepSeekEnvironment = {
  * - deepseek（默认）：调用真实 DeepSeek API
  */
 export async function callDeepSeekJson<T>(messages: ChatMessage[], signal?: AbortSignal): Promise<T> {
-  const runtimeEnv = env as DeepSeekEnvironment;
+  const runtimeEnv = await getRuntimeEnv() as DeepSeekEnvironment;
   const provider = (runtimeEnv.CREATIVE_MODEL_PROVIDER ?? process.env.CREATIVE_MODEL_PROVIDER ?? "deepseek").trim().toLowerCase();
 
   if (provider === "mock") {

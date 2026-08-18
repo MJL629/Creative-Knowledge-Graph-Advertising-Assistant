@@ -1,0 +1,16 @@
+{
+  "id": "project_sample_water_fight",
+  "name": "夏日水枪节广告创意",
+  "brief": {
+    "product": "夏日水枪节",
+    "knownFacts": ["园区支持多人同屏水枪对战"],
+    "ideaFragments": ["透明王冠", "倒计时挑战"],
+    "mustKeep": ["轻松", "现场参与感"],
+    "forbidden": ["危险动作"],
+    "platform": "抖音",
+    "durationSeconds": 30
+  },
+  "graphRevision": 1,
+  "createdAt": "2026-08-18T00:00:00.000Z",
+  "updatedAt": "2026-08-18T00:00:00.000Z"
+}

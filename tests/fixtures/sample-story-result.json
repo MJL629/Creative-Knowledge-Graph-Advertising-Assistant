@@ -1,0 +1,17 @@
+{
+  "id": "story_sample_1",
+  "projectId": "project_sample_water_fight",
+  "version": 1,
+  "graphRevision": 1,
+  "content": {
+    "concept": "水枪国王守擂失败，新手在最后一秒反超。",
+    "beats": [
+      {
+        "phase": "HOOK",
+        "text": "透明王冠升起，倒计时开始。",
+        "refs": ["node_king", "node_countdown"]
+      }
+    ]
+  },
+  "createdAt": "2026-08-18T00:00:00.000Z"
+}

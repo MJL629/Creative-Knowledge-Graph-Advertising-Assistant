@@ -1,0 +1,24 @@
+{
+  "baseRevision": 1,
+  "candidates": [
+    {
+      "clientKey": "grow_1",
+      "parentRef": "node_king",
+      "category": "story_event",
+      "subtype": "反转",
+      "title": "王冠突然逃跑",
+      "description": "倒计时中透明王冠顺着水流逃走，所有人转向追逐。",
+      "attributes": {},
+      "rationale": "延展冲突并保留水枪节卖点。",
+      "actorRefs": ["node_king"],
+      "productFeatureRefs": ["多人同屏"],
+      "growthMode": "next_event",
+      "subjectContinuity": {
+        "status": "anchored",
+        "score": 0.9,
+        "note": "主体仍围绕水枪国王。"
+      }
+    }
+  ],
+  "trace": []
+}

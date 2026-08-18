@@ -1,0 +1,15 @@
+{
+  "product": "夏日水枪节",
+  "knownFacts": ["园区支持多人同屏水枪对战", "活动适合亲子和朋友组队"],
+  "ideaFragments": ["透明王冠", "倒计时挑战", "最后一秒反超"],
+  "mustKeep": ["轻松", "现场参与感"],
+  "forbidden": ["危险动作", "贬低游客"],
+  "constraints": {
+    "platform": "抖音",
+    "durationSeconds": 30
+  },
+  "platform": "抖音",
+  "durationSeconds": 30,
+  "styles": ["热闹", "反转"],
+  "sellingPoints": ["多人同屏", "水枪对战", "随时开局"]
+}

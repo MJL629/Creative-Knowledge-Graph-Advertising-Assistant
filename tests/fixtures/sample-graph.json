@@ -1,0 +1,55 @@
+{
+  "projectId": "project_sample_water_fight",
+  "revision": 1,
+  "nodes": [
+    {
+      "id": "node_king",
+      "projectId": "project_sample_water_fight",
+      "type": "creative_element",
+      "category": "creative_element",
+      "label": "水枪国王",
+      "title": "水枪国王",
+      "description": "戴透明王冠、用超长水枪发号施令的活动主角。",
+      "status": "adopted",
+      "parentId": null,
+      "depth": 1,
+      "importance": 4,
+      "position": { "x": 95, "y": 255 },
+      "sourceRefs": ["brief.product"],
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "node_countdown",
+      "projectId": "project_sample_water_fight",
+      "type": "motivation_conflict",
+      "category": "motivation_conflict",
+      "label": "十秒王位保卫战",
+      "title": "十秒王位保卫战",
+      "description": "所有游客都能挑战现任国王，倒计时结束即换位。",
+      "status": "candidate",
+      "parentId": null,
+      "depth": 1,
+      "importance": 5,
+      "position": { "x": 395, "y": 255 },
+      "sourceRefs": ["brief.ideaFragments[1]"],
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_king_countdown",
+      "projectId": "project_sample_water_fight",
+      "sourceId": "node_king",
+      "targetId": "node_countdown",
+      "source": "node_king",
+      "target": "node_countdown",
+      "type": "causes",
+      "label": "触发挑战",
+      "status": "candidate",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    }
+  ]
+}

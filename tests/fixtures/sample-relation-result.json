@@ -1,0 +1,10 @@
+{
+  "relations": [
+    {
+      "label": "触发挑战",
+      "direction": "forward",
+      "rationale": "人物动作推动冲突开始。"
+    }
+  ],
+  "trace": []
+}

@@ -1,0 +1,29 @@
+{
+  "brief": {
+    "product": "夏日水枪节",
+    "ideaFragments": ["透明王冠", "倒计时挑战"]
+  },
+  "decision": {
+    "intent": "initial",
+    "stage": "exploration",
+    "next_agent": "creative",
+    "need_critic": true,
+    "need_memory": false,
+    "need_rag": false,
+    "need_external_tool": false,
+    "need_user_confirmation": false,
+    "context_plan": ["Global Brief", "平台与时长"]
+  },
+  "candidates": [
+    {
+      "clientKey": "creative_1",
+      "category": "creative_element",
+      "subtype": "人物",
+      "title": "水枪国王",
+      "description": "戴透明王冠、用超长水枪发号施令的活动主角。",
+      "attributes": { "role": "challenger" },
+      "rationale": "建立可识别主体。"
+    }
+  ],
+  "trace": []
+}
