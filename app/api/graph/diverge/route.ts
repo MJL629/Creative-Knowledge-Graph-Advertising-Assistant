@@ -1,6 +1,6 @@
 import { getCreativeAgentGateway } from "../../../../lib/agents/creative-agent-gateway";
 import { getRequestId, okJson, routeError } from "../../../../lib/api/response";
-import { ERROR_CODES } from "../../../../lib/contracts";
+import { ERROR_CODES, normalizeCreativeBrief } from "../../../../lib/contracts";
 import { getRuntimeEnv } from "../../../../lib/runtime/env";
 
 export async function POST(request: Request) {
@@ -10,10 +10,7 @@ export async function POST(request: Request) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const body = await request.json();
-    if (!body || typeof body !== "object") throw new Error("请求体不能为空");
-    if (!body.product || typeof body.product !== "string" || !body.product.trim()) throw new Error("推广对象不能为空");
-    if (!Array.isArray(body.ideaFragments) || !body.ideaFragments.some((v: unknown) => typeof v === "string" && v.trim())) throw new Error("至少需要一个碎片想法");
+    const body = normalizeCreativeBrief(await request.json());
     const result = await getCreativeAgentGateway().initialDivergence(body, { requestId }, controller.signal);
     return okJson(result, {}, requestId);
   } catch (error) {

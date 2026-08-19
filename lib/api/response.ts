@@ -26,7 +26,7 @@ export function errorJson(code: string, message: string, status = 500, details?:
   );
 }
 
-export function routeError(error: unknown, fallbackCode = ERROR_CODES.INTERNAL_ERROR, fallbackStatus = 500, requestId?: string) {
+export function routeError(error: unknown, fallbackCode: string = ERROR_CODES.INTERNAL_ERROR, fallbackStatus = 500, requestId?: string) {
   if (error instanceof AppError) {
     return errorJson(error.code, error.message, error.status, error.details, requestId);
   }

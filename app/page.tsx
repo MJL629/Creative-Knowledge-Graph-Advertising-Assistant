@@ -40,6 +40,13 @@ type StoryConcept = {
   shooting_feasibility: string;
 };
 type RelationCandidate = { label: string; direction: "forward" | "reverse" | "both"; rationale: string };
+type DivergenceCandidate = { category: Category; subtype?: string; title: string; description: string; attributes?: Record<string, string | string[]>; rationale: string };
+type GrowthCandidate = { clientKey: string; parentRef: string; category: Category; subtype?: string; title: string; description: string; attributes: Record<string, string | string[]>; rationale: string; actorRefs: string[]; productFeatureRefs: string[]; growthMode: GrowthMode; subjectContinuity: { status: string; score: number; note: string } };
+type ApiEnvelope<T> = { ok: boolean; result: T; error?: { message?: string } };
+
+async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
+  return response.json() as Promise<ApiEnvelope<T>>;
+}
 
 const categoryMeta: Record<Category, { label: string; color: string; x: number }> = {
   creative_element: { label: "创意元素", color: "#7657d5", x: 150 },
@@ -230,7 +237,7 @@ export default function Home() {
           sellingPoints: sellingPoints.split(/[；;、,，\n]/).map((value) => value.trim()).filter(Boolean),
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiEnvelope<{ candidates: DivergenceCandidate[]; trace?: AgentTrace[]; repairCount: number }>(response);
       if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "生成失败");
 
       const positions: Record<Category, Array<{ x: number; y: number }>> = {
@@ -239,7 +246,7 @@ export default function Home() {
         story_event: [{ x: 695, y: 255 }, { x: 805, y: 405 }],
       };
       const counters: Record<Category, number> = { creative_element: 0, motivation_conflict: 0, story_event: 0 };
-      const generated: Node[] = payload.result.candidates.map((candidate: { category: Category; subtype?: string; title: string; description: string; attributes?: Record<string, string | string[]>; rationale: string }, index: number) => {
+      const generated: Node[] = payload.result.candidates.map((candidate, index) => {
         const position = positions[candidate.category][counters[candidate.category]++] || { x: 100 + index * 80, y: 330 };
         return {
           id: `candidate-${index + 1}`,
@@ -465,10 +472,10 @@ export default function Home() {
           subjectContract: { promotionSubject: product, narrativeSubjectIds: anchor ? [anchor.id] : [], productFeatureRefs: featureRefs },
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiEnvelope<{ candidates: GrowthCandidate[]; trace?: AgentTrace[]; repairCount: number }>(response);
       if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "生长候选生成失败");
       const additions: Node[] = [];
-      payload.result.candidates.forEach((candidate: { clientKey: string; parentRef: string; category: Category; subtype?: string; title: string; description: string; attributes: Record<string, string | string[]>; rationale: string; actorRefs: string[]; productFeatureRefs: string[]; growthMode: GrowthMode; subjectContinuity: { status: string; score: number; note: string } }, index: number) => {
+      payload.result.candidates.forEach((candidate, index) => {
         const position = freePosition(candidate.category, [...nodes, ...additions]);
         additions.push({
           id: `${candidate.clientKey}-${Date.now()}-${index}`,
@@ -542,7 +549,7 @@ export default function Home() {
           excludedRelations: [],
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiEnvelope<{ relations: RelationCandidate[] }>(response);
       if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "关系推荐失败");
       const candidates: RelationCandidate[] = payload.result.relations || [];
       setRelationCandidates(candidates);
@@ -625,7 +632,7 @@ export default function Home() {
           adoptedEdges: adoptedEdges.map(({ source, target, label, direction }) => ({ source, target, label, direction })),
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiEnvelope<StoryConcept>(response);
       if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "剧情收敛失败");
       setStoryConcept(payload.result);
       setTraceId(`story-v${revision + 1}`);

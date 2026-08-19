@@ -154,7 +154,7 @@ async function criticAgent(brief: BriefInput, nodes: Candidate[], signal?: Abort
     { role: "system", content: `${sharedSystem}\n你是 Critic Agent，只做独立语义审查。不要重复字段、数量、ID 等确定性校验；重点检查偏题、隐性违反 must_avoid、语义重复、人物/冲突/事件矛盾和广告目标遗忘。` },
     { role: "user", content: JSON.stringify({ review_mode: "candidate", brief, candidates: nodes, output: { pass: "boolean", issues: [{ clientKey: "string", severity: "warning | error", message: "string", repair_instruction: "string" }], summary: "string" } }) },
   ], signal);
-  const issues = Array.isArray(result.issues) ? result.issues.filter((issue) => issue && typeof issue.clientKey === "string").map((issue) => ({
+  const issues: CriticResult["issues"] = Array.isArray(result.issues) ? result.issues.filter((issue) => issue && typeof issue.clientKey === "string").map((issue) => ({
       clientKey: String(issue.clientKey),
       severity: issue.severity === "warning" ? "warning" : "error",
       message: String(issue.message || "语义审查未通过"),

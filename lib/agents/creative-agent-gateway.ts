@@ -41,7 +41,12 @@ export class PipelineCreativeAgentGateway implements CreativeAgentGateway {
 }
 
 const creativeAgentGateway = new PipelineCreativeAgentGateway();
+let registeredGateway: CreativeAgentGateway | undefined;
+
+export function registerCreativeAgentGateway(gateway: CreativeAgentGateway) {
+  registeredGateway = gateway;
+}
 
 export function getCreativeAgentGateway(): CreativeAgentGateway {
-  return creativeAgentGateway;
+  return registeredGateway ?? creativeAgentGateway;
 }
