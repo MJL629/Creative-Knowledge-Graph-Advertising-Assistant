@@ -89,5 +89,6 @@ export type GraphCommitOperation =
 export interface GraphCommitRequest {
   projectId: string;
   expectedRevision: number;
+  operationId?: string;
   operations: GraphCommitOperation[];
 }

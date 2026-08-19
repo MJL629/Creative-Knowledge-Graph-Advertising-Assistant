@@ -5,6 +5,7 @@ export interface AgentRunContext {
   projectId?: string;
   graphRevision?: number;
   requestId?: string;
+  threadId?: string;
 }
 
 export interface CreativeAgentGateway {

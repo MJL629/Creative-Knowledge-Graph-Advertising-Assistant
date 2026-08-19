@@ -3,6 +3,7 @@ import type { RelationRequest } from "../../../../lib/agents/graph-pipeline";
 import { getRequestId, okJson, routeError } from "../../../../lib/api/response";
 import { ERROR_CODES } from "../../../../lib/contracts";
 import { getRuntimeEnv } from "../../../../lib/runtime/env";
+import { traceCall } from "../../../../lib/observability/trace";
 
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
@@ -12,7 +13,8 @@ export async function POST(request: Request) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const body = await request.json() as RelationRequest;
-    const result = await getCreativeAgentGateway().suggestRelations(body, { requestId }, controller.signal);
+    const result = await traceCall("creative", "relation_suggestion", { requestId }, () =>
+      getCreativeAgentGateway().suggestRelations(body, { requestId }, controller.signal));
     return okJson(result, {}, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : "未知错误";

@@ -8,6 +8,7 @@ export async function POST(request: Request) {
     const body = await readJsonObject(request);
     const projectId = String(body.projectId ?? "").trim();
     const expectedRevision = Number(body.expectedRevision);
+    const operationId = typeof body.operationId === "string" ? body.operationId.trim() : undefined;
     if (!projectId) return errorJson(ERROR_CODES.VALIDATION_ERROR, "projectId is required", 400, undefined, requestId);
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
       return errorJson(ERROR_CODES.VALIDATION_ERROR, "expectedRevision must be a non-negative integer", 400, undefined, requestId);
@@ -19,6 +20,7 @@ export async function POST(request: Request) {
     const snapshot = await getProjectRepository().commitGraph({
       projectId,
       expectedRevision,
+      operationId,
       operations: body.operations,
     } as GraphCommitRequest);
     return okJson(snapshot, {}, requestId);

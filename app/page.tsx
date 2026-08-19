@@ -42,10 +42,105 @@ type StoryConcept = {
 type RelationCandidate = { label: string; direction: "forward" | "reverse" | "both"; rationale: string };
 type DivergenceCandidate = { category: Category; subtype?: string; title: string; description: string; attributes?: Record<string, string | string[]>; rationale: string };
 type GrowthCandidate = { clientKey: string; parentRef: string; category: Category; subtype?: string; title: string; description: string; attributes: Record<string, string | string[]>; rationale: string; actorRefs: string[]; productFeatureRefs: string[]; growthMode: GrowthMode; subjectContinuity: { status: string; score: number; note: string } };
-type ApiEnvelope<T> = { ok: boolean; result: T; error?: { message?: string } };
+type ApiEnvelope<T> = { ok: boolean; result: T; error?: { code?: string; message?: string; details?: { snapshot?: GraphSnapshot } } };
+type GraphSnapshot = { projectId: string; revision: number; nodes: ServerNode[]; edges: ServerEdge[] };
+type ServerNode = Omit<Node, "x" | "y" | "provenance"> & {
+  projectId: string;
+  type: string;
+  label: string;
+  position?: { x: number; y: number };
+  provenance?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+type ServerEdge = Edge & { projectId: string; sourceId: string; targetId: string; createdAt: string; updatedAt: string };
+type GraphOperation =
+  | { type: "ADD_NODE"; node: Record<string, unknown> }
+  | { type: "ADD_EDGE"; edge: Record<string, unknown> }
+  | { type: "ADOPT_NODE" | "EXCLUDE_NODE" | "RESTORE_NODE"; nodeId: string }
+  | { type: "UPDATE_NODE"; nodeId: string; patch: Record<string, unknown> }
+  | { type: "DELETE_NODE"; nodeId: string; cascade?: boolean }
+  | { type: "ADOPT_EDGE" | "EXCLUDE_EDGE" | "DELETE_EDGE"; edgeId: string };
+type WorkflowState = {
+  projectId: string;
+  threadId: string;
+  intent: "start" | "grow" | "relations" | "concept";
+  graphRevision: number;
+  focusNodeId?: string;
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  graphSnapshot?: GraphSnapshot;
+  candidateResult?: unknown;
+  next: string[];
+  interrupts: unknown[];
+  errors: string[];
+};
 
 async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
   return response.json() as Promise<ApiEnvelope<T>>;
+}
+
+function splitList(value: string) {
+  return value.split(/[；;、,，\n]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function toUiGraph(snapshot: GraphSnapshot) {
+  return {
+    revision: snapshot.revision,
+    nodes: snapshot.nodes.map((node) => ({
+      id: node.id,
+      title: node.title ?? node.label,
+      description: node.description ?? "",
+      category: (node.category ?? node.type) as Category,
+      subtype: node.subtype,
+      status: node.status,
+      x: node.position?.x ?? 100,
+      y: node.position?.y ?? 250,
+      parentId: node.parentId ?? undefined,
+      provenance: node.provenance ?? "Server persisted",
+      attributes: node.attributes,
+      growthMode: node.growthMode,
+      actorRefs: node.actorRefs,
+      productFeatureRefs: node.productFeatureRefs,
+      originalParentId: node.originalParentId ?? undefined,
+      originalDepth: node.originalDepth,
+      depth: node.depth,
+      importance: node.importance,
+    })),
+    edges: snapshot.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.sourceId ?? edge.source,
+      target: edge.targetId ?? edge.target,
+      label: edge.label,
+      type: edge.type ?? "semantic",
+      direction: edge.direction,
+      status: edge.status,
+    })),
+  };
+}
+
+function addNodeOperation(node: Node, status = node.status): GraphOperation {
+  return {
+    type: "ADD_NODE",
+    node: {
+      id: node.id,
+      type: node.category,
+      category: node.category,
+      subtype: node.subtype,
+      label: node.title,
+      title: node.title,
+      description: node.description,
+      status,
+      parentId: node.parentId,
+      depth: node.depth,
+      position: { x: node.x, y: node.y },
+      attributes: node.attributes,
+      provenance: node.provenance,
+      growthMode: node.growthMode,
+      actorRefs: node.actorRefs,
+      productFeatureRefs: node.productFeatureRefs,
+    },
+  };
 }
 
 const categoryMeta: Record<Category, { label: string; color: string; x: number }> = {
@@ -106,6 +201,9 @@ export default function Home() {
   const [growthError, setGrowthError] = useState("");
   const [isGrowing, setIsGrowing] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [workflowThreadId, setWorkflowThreadId] = useState<string | null>(null);
+  const [pendingCandidateIds, setPendingCandidateIds] = useState<Set<string>>(new Set());
   const [request, setRequest] = useState("等待输入");
   const [traceId, setTraceId] = useState<string | null>(null);
   const [agentTrace, setAgentTrace] = useState<AgentTrace[]>([]);
@@ -134,40 +232,115 @@ export default function Home() {
   const [dragState, setDragState] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
   const movedRef = useRef(false);
 
-  // 会话恢复（FR-11）：从 localStorage 读取（一次性初始化，setState 属预期行为）
-  const SESSION_KEY = "creative-graph-session-v1";
+  // localStorage 只保存服务端项目指针；Project/Graph/Story 的唯一事实源是 API。
+  const SESSION_KEY = "creative-graph-project-v2";
+  const THREAD_KEY = "creative-graph-thread-v2";
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect */
-    try {
-      const saved = localStorage.getItem(SESSION_KEY);
-      if (!saved) return;
-      const session = JSON.parse(saved);
-      if (session.product) setProduct(session.product);
-      if (session.knownInformation) setKnownInformation(session.knownInformation);
-      if (Array.isArray(session.ideas) && session.ideas.length) setIdeas(session.ideas);
-      if (session.mustKeep) setMustKeep(session.mustKeep);
-      if (session.mustAvoid) setMustAvoid(session.mustAvoid);
-      if (session.audience) setAudience(session.audience);
-      if (session.platform) setPlatform(session.platform);
-      if (session.durationSeconds) setDurationSeconds(session.durationSeconds);
-      if (session.styles) setStyles(session.styles);
-      if (session.hotMemes) setHotMemes(session.hotMemes);
-      if (session.sellingPoints) setSellingPoints(session.sellingPoints);
-      if (Array.isArray(session.nodes) && session.nodes.length) setNodes(session.nodes);
-      if (Array.isArray(session.edges)) setEdges(session.edges);
-      if (typeof session.revision === "number") setRevision(session.revision);
-      if (typeof session.stage === "string") setStage(session.stage as "brief" | "graph" | "output");
-      if (session.storyConcept) setStoryConcept(session.storyConcept);
-      setRequest("会话已恢复 · 继续编辑");
-    } catch { /* 损坏的 session 忽略 */ }
-    /* eslint-enable react-hooks/set-state-in-effect */
+    const savedProjectId = localStorage.getItem(SESSION_KEY);
+    if (!savedProjectId) return;
+    void (async () => {
+      try {
+        const [projectResponse, graphResponse, storyResponse] = await Promise.all([
+          fetch(`/api/projects/${savedProjectId}`),
+          fetch(`/api/projects/${savedProjectId}/graph`),
+          fetch(`/api/projects/${savedProjectId}/stories`),
+        ]);
+        const projectPayload = await readApiEnvelope<{ name: string; brief: Record<string, unknown> }>(projectResponse);
+        const graphPayload = await readApiEnvelope<GraphSnapshot>(graphResponse);
+        const storyPayload = await readApiEnvelope<Array<{ content: StoryConcept }>>(storyResponse);
+        if (!projectResponse.ok || !graphResponse.ok || !projectPayload.ok || !graphPayload.ok) throw new Error("项目不存在");
+        const brief = projectPayload.result.brief;
+        setProjectId(savedProjectId);
+        setProduct(String(brief.product ?? ""));
+        setKnownInformation(String(brief.knownInformation ?? ""));
+        setIdeas(Array.isArray(brief.ideaFragments) ? brief.ideaFragments.map(String) : [""]);
+        setMustKeep(Array.isArray(brief.mustKeep) ? brief.mustKeep.join("；") : "");
+        setMustAvoid(Array.isArray(brief.mustAvoid) ? brief.mustAvoid.join("；") : "");
+        setAudience(String(brief.audience ?? ""));
+        setPlatform(String(brief.platform ?? "douyin"));
+        setDurationSeconds(Number(brief.durationSeconds ?? 30));
+        setStyles(Array.isArray(brief.styles) ? brief.styles.join("、") : "");
+        setHotMemes(Array.isArray(brief.hotMemes) ? brief.hotMemes.join("、") : "");
+        setSellingPoints(Array.isArray(brief.sellingPoints) ? brief.sellingPoints.join("、") : "");
+        const graph = toUiGraph(graphPayload.result);
+        setNodes(graph.nodes);
+        setEdges(graph.edges);
+        setRevision(graph.revision);
+        const latestStory = storyPayload.ok ? storyPayload.result.at(-1)?.content : undefined;
+        if (latestStory) setStoryConcept(latestStory);
+        setStage(latestStory ? "output" : graph.nodes.length ? "graph" : "brief");
+        setRequest("已从服务端恢复项目");
+        const savedThreadId = localStorage.getItem(THREAD_KEY);
+        if (savedThreadId) {
+          const workflowResponse = await fetch(`/api/workflow/${savedThreadId}`);
+          const workflowPayload = await readApiEnvelope<WorkflowState>(workflowResponse);
+          if (workflowResponse.ok && workflowPayload.ok && workflowPayload.result.next.length) {
+            setWorkflowThreadId(savedThreadId);
+            const state = workflowPayload.result;
+            if (state.intent === "start") {
+              const result = state.candidateResult as { candidates?: DivergenceCandidate[] };
+              const counters: Record<Category, number> = { creative_element: 0, motivation_conflict: 0, story_event: 0 };
+              const restored = (result?.candidates ?? []).map((candidate, index): Node => {
+                const slot = counters[candidate.category]++;
+                return {
+                  id: `pending_${savedThreadId}_${index}`,
+                  title: candidate.title,
+                  description: candidate.description,
+                  category: candidate.category,
+                  subtype: candidate.subtype,
+                  status: "candidate",
+                  x: categoryMeta[candidate.category].x + (slot ? 55 : -55),
+                  y: 255 + slot * 150,
+                  depth: 1,
+                  attributes: candidate.attributes,
+                  provenance: `Workflow restored · ${candidate.rationale}`,
+                };
+              });
+              if (restored.length) {
+                setNodes(restored);
+                setPendingCandidateIds(new Set(restored.map((node) => node.id)));
+              }
+            } else if (state.intent === "grow") {
+              const result = state.candidateResult as { candidates?: GrowthCandidate[] };
+              const restored = (result?.candidates ?? []).map((candidate, index): Node => ({
+                id: `pending_${savedThreadId}_${index}`,
+                title: candidate.title,
+                description: candidate.description,
+                category: candidate.category,
+                subtype: candidate.subtype,
+                status: "candidate",
+                x: categoryMeta[candidate.category].x + index * 50,
+                y: 430 + index * 70,
+                parentId: candidate.parentRef ?? state.focusNodeId,
+                depth: 2,
+                provenance: `Workflow restored · ${candidate.rationale}`,
+                attributes: candidate.attributes,
+                growthMode: candidate.growthMode,
+                actorRefs: candidate.actorRefs,
+                productFeatureRefs: candidate.productFeatureRefs,
+              }));
+              if (restored.length) {
+                setNodes((current) => [...current, ...restored]);
+                setPendingCandidateIds(new Set(restored.map((node) => node.id)));
+              }
+            } else if (state.intent === "relations" && state.sourceNodeId && state.targetNodeId) {
+              const result = state.candidateResult as { relations?: RelationCandidate[] };
+              const candidates = result?.relations ?? [];
+              const edgeId = `pending_edge_${savedThreadId}`;
+              setRelationCandidates(candidates);
+              setDraftRelation({ label: candidates[0]?.label ?? "触发并推动", direction: candidates[0]?.direction ?? "forward" });
+              setEdges((current) => [...current, { id: edgeId, source: state.sourceNodeId!, target: state.targetNodeId!, label: candidates[0]?.label ?? "触发并推动", type: "semantic", direction: candidates[0]?.direction ?? "forward", status: "pending" }]);
+              setEditingEdgeId(edgeId);
+              setDraftEdgeId(edgeId);
+            }
+            setRequest("已恢复暂停的 Workflow · 等待人工选择");
+          }
+        }
+      } catch {
+        localStorage.removeItem(SESSION_KEY);
+      }
+    })();
   }, []);
-
-  // 会话保存（FR-11）：状态变化时写入 localStorage
-  useEffect(() => {
-    const session = { product, knownInformation, ideas, mustKeep, mustAvoid, audience, platform, durationSeconds, styles, hotMemes, sellingPoints, nodes, edges, revision, stage, storyConcept };
-    try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* 配额满忽略 */ }
-  }, [product, knownInformation, ideas, mustKeep, mustAvoid, audience, platform, durationSeconds, styles, hotMemes, sellingPoints, nodes, edges, revision, stage, storyConcept]);
 
   useEffect(() => {
     function cancelRelation(event: KeyboardEvent) {
@@ -214,31 +387,129 @@ export default function Home() {
     ];
   }, [adopted, product]);
 
+  function currentBrief() {
+    return {
+      product,
+      knownInformation,
+      ideaFragments: ideas.map((value) => value.trim()).filter(Boolean),
+      mustKeep: splitList(mustKeep),
+      mustAvoid: splitList(mustAvoid),
+      audience,
+      platform,
+      durationSeconds,
+      styles: splitList(styles),
+      hotMemes: splitList(hotMemes),
+      sellingPoints: splitList(sellingPoints),
+    };
+  }
+
+  function applyServerGraph(snapshot: GraphSnapshot) {
+    const graph = toUiGraph(snapshot);
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+    setRevision(graph.revision);
+  }
+
+  async function ensureProject() {
+    const brief = currentBrief();
+    if (projectId) {
+      const response = await fetch(`/api/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: product, brief }),
+      });
+      const payload = await readApiEnvelope<{ id: string }>(response);
+      if (response.ok && payload.ok) return projectId;
+      if (response.status !== 404) throw new Error(payload.error?.message || "项目更新失败");
+    }
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: product, brief }),
+    });
+    const payload = await readApiEnvelope<{ id: string }>(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "项目创建失败");
+    setProjectId(payload.result.id);
+    localStorage.setItem(SESSION_KEY, payload.result.id);
+    setRevision(0);
+    return payload.result.id;
+  }
+
+  async function commitOperations(operations: GraphOperation[], targetProjectId = projectId) {
+    if (!targetProjectId) throw new Error("请先创建项目");
+    const response = await fetch("/api/graph/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: targetProjectId,
+        expectedRevision: revision,
+        operationId: await operationIdFor(revision, operations),
+        operations,
+      }),
+    });
+    const payload = await readApiEnvelope<GraphSnapshot>(response);
+    if (!response.ok || !payload.ok) {
+      if (response.status === 409 && payload.error?.details?.snapshot) applyServerGraph(payload.error.details.snapshot);
+      throw new Error(payload.error?.message || "图谱提交失败");
+    }
+    applyServerGraph(payload.result);
+    return payload.result;
+  }
+
+  async function operationIdFor(expectedRevision: number, operations: GraphOperation[]) {
+    const bytes = new TextEncoder().encode(JSON.stringify({ projectId, expectedRevision, operations }));
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function startWorkflow(input: Record<string, unknown>) {
+    if (!projectId && !input.projectId) throw new Error("请先创建项目");
+    const response = await fetch("/api/workflow/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: input.projectId ?? projectId, ...input }),
+    });
+    const payload = await readApiEnvelope<WorkflowState>(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "Workflow 启动失败");
+    if (payload.result.next.length) {
+      setWorkflowThreadId(payload.result.threadId);
+      localStorage.setItem(THREAD_KEY, payload.result.threadId);
+    } else {
+      setWorkflowThreadId(null);
+      localStorage.removeItem(THREAD_KEY);
+    }
+    return payload.result;
+  }
+
+  async function resumeWorkflow(operations: GraphOperation[]) {
+    if (!workflowThreadId) throw new Error("没有可恢复的 Workflow");
+    const response = await fetch("/api/workflow/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: workflowThreadId, decision: { action: "commit", operations } }),
+    });
+    const payload = await readApiEnvelope<WorkflowState>(response);
+    if (!response.ok || !payload.ok) {
+      if (response.status === 409 && payload.error?.details?.snapshot) applyServerGraph(payload.error.details.snapshot);
+      throw new Error(payload.error?.message || "Workflow 恢复失败");
+    }
+    if (payload.result.graphSnapshot) applyServerGraph(payload.result.graphSnapshot);
+    setWorkflowThreadId(null);
+    setPendingCandidateIds(new Set());
+    localStorage.removeItem(THREAD_KEY);
+    return payload.result;
+  }
+
   async function runInitialGeneration() {
     setIsGenerating(true);
     setGenerationError("");
     setAgentTrace([]);
     setRequest("四 Agent 编排运行中…");
     try {
-      const response = await fetch("/api/graph/diverge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          product,
-          knownInformation,
-          ideaFragments: ideas.map((value) => value.trim()).filter(Boolean),
-          mustKeep: mustKeep.split(/[；;、,，\n]/).map((value) => value.trim()).filter(Boolean),
-          mustAvoid: mustAvoid.split(/[；;、,，\n]/).map((value) => value.trim()).filter(Boolean),
-          audience,
-          platform,
-          durationSeconds,
-          styles: styles.split(/[；;、,，\n]/).map((value) => value.trim()).filter(Boolean),
-          hotMemes: hotMemes.split(/[；;、,，\n]/).map((value) => value.trim()).filter(Boolean),
-          sellingPoints: sellingPoints.split(/[；;、,，\n]/).map((value) => value.trim()).filter(Boolean),
-        }),
-      });
-      const payload = await readApiEnvelope<{ candidates: DivergenceCandidate[]; trace?: AgentTrace[]; repairCount: number }>(response);
-      if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "生成失败");
+      const activeProjectId = await ensureProject();
+      const workflow = await startWorkflow({ projectId: activeProjectId, intent: "start", needRag: true });
+      const result = workflow.candidateResult as { candidates: DivergenceCandidate[]; trace?: AgentTrace[]; repairCount: number };
+      if (!result?.candidates?.length) throw new Error("Workflow 未返回候选");
 
       const positions: Record<Category, Array<{ x: number; y: number }>> = {
         creative_element: [{ x: 95, y: 255 }, { x: 205, y: 405 }],
@@ -246,10 +517,10 @@ export default function Home() {
         story_event: [{ x: 695, y: 255 }, { x: 805, y: 405 }],
       };
       const counters: Record<Category, number> = { creative_element: 0, motivation_conflict: 0, story_event: 0 };
-      const generated: Node[] = payload.result.candidates.map((candidate, index) => {
+      const generated: Node[] = result.candidates.map((candidate, index) => {
         const position = positions[candidate.category][counters[candidate.category]++] || { x: 100 + index * 80, y: 330 };
         return {
-          id: `candidate-${index + 1}`,
+          id: `node_${crypto.randomUUID()}`,
           category: candidate.category,
           subtype: candidate.subtype,
           title: candidate.title,
@@ -264,9 +535,9 @@ export default function Home() {
       });
       setNodes(generated);
       setEdges([]);
-      setAgentTrace(payload.result.trace || []);
-      setRevision(1);
-      setRequest(`四 Agent 完成 · Repair ${payload.result.repairCount} 次`);
+      setPendingCandidateIds(new Set(generated.map((node) => node.id)));
+      setAgentTrace(result.trace || []);
+      setRequest(`Workflow 已暂停 · 请选择候选 · Repair ${result.repairCount} 次`);
       setStage("graph");
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : "生成失败");
@@ -276,10 +547,24 @@ export default function Home() {
     }
   }
 
-  function updateStatus(id: string, status: Status) {
-    setNodes((current) => current.map((node) => node.id === id ? { ...node, status } : node));
-    setRevision((value) => value + 1);
-    setRequest(`domain.update · ${status}`);
+  async function updateStatus(id: string, status: Status) {
+    if (pendingCandidateIds.has(id) && workflowThreadId) {
+      try {
+        const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
+        await resumeWorkflow(pendingNodes.map((node) => addNodeOperation(node, node.id === id ? status : node.status)));
+        setRequest(`Workflow 已恢复 · ${status} · Graph Commit 完成`);
+      } catch (error) {
+        setRequest(`Workflow 提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+      }
+      return;
+    }
+    const operationType = status === "adopted" ? "ADOPT_NODE" : status === "excluded" ? "EXCLUDE_NODE" : "RESTORE_NODE";
+    try {
+      await commitOperations([{ type: operationType, nodeId: id }]);
+      setRequest(`domain.update · ${status} · 已提交`);
+    } catch (error) {
+      setRequest(`提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
   }
 
   // 节点编辑（FR-04）+ 需复核传播（FR-12：编辑已采用内容后标记依赖）
@@ -287,18 +572,21 @@ export default function Home() {
     setEditingNode(true);
     setEditDraft({ title: node.title, description: node.description, subtype: node.subtype || "" });
   }
-  function saveEditNode(id: string) {
+  async function saveEditNode(id: string) {
     const target = nodes.find((n) => n.id === id);
-    setNodes((current) => current.map((node) => node.id === id ? {
-      ...node,
-      title: editDraft.title.trim() || node.title,
-      description: editDraft.description.trim() || node.description,
-      subtype: editDraft.subtype.trim() || undefined,
-      originalParentId: node.originalParentId || node.parentId,
-      originalDepth: node.originalDepth ?? node.depth,
-    } : node));
-    setRevision((value) => value + 1);
-    setEditingNode(false);
+    if (!target) return;
+    const operations: GraphOperation[] = [{
+      type: "UPDATE_NODE",
+      nodeId: id,
+      patch: {
+        title: editDraft.title.trim() || target.title,
+        label: editDraft.title.trim() || target.title,
+        description: editDraft.description.trim() || target.description,
+        subtype: editDraft.subtype.trim() || undefined,
+        originalParentId: target.originalParentId || target.parentId,
+        originalDepth: target.originalDepth ?? target.depth,
+      },
+    }];
     if (target?.status === "adopted") {
       // FR-12：编辑已采用节点 → 其语义关系邻居（已采用）标记为需复核
       const neighborIds = new Set<string>();
@@ -307,29 +595,32 @@ export default function Home() {
         if (edge.source === id) neighborIds.add(edge.target);
         if (edge.target === id) neighborIds.add(edge.source);
       });
-      if (neighborIds.size) {
-        setNodes((current) => current.map((node) => neighborIds.has(node.id) && node.status === "adopted" ? { ...node, status: "needs_review" } : node));
-        setRequest(`domain.update · 节点已编辑 · ${neighborIds.size} 个依赖节点标记需复核`);
-      } else {
-        setRequest("domain.update · 节点已编辑");
-      }
-    } else {
-      setRequest("domain.update · 节点已编辑");
+      nodes.filter((node) => neighborIds.has(node.id) && node.status === "adopted").forEach((node) => {
+        operations.push({ type: "UPDATE_NODE", nodeId: node.id, patch: { status: "needs_review" } });
+      });
+    }
+    try {
+      await commitOperations(operations);
+      setEditingNode(false);
+      setRequest(`domain.update · 节点已编辑${operations.length > 1 ? ` · ${operations.length - 1} 个依赖节点需复核` : ""}`);
+    } catch (error) {
+      setRequest(`编辑提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
     }
   }
   function cancelEditNode() { setEditingNode(false); }
 
   // 需复核 → 重新确认采用（PRD 5.2：用户重新确认后才进入最终剧情）
-  function confirmNeedsReview(id: string) {
-    setNodes((current) => current.map((node) => node.id === id && node.status === "needs_review" ? { ...node, status: "adopted" } : node));
-    setRevision((value) => value + 1);
-    setRequest("domain.update · 需复核节点已重新确认");
+  async function confirmNeedsReview(id: string) {
+    await updateStatus(id, "adopted");
   }
 
   // 重要性调整（PRD 7.1 importance 字段）
-  function updateImportance(id: string, level: number) {
-    setNodes((current) => current.map((node) => node.id === id ? { ...node, importance: level } : node));
-    setRevision((value) => value + 1);
+  async function updateImportance(id: string, level: number) {
+    try {
+      await commitOperations([{ type: "UPDATE_NODE", nodeId: id, patch: { importance: level } }]);
+    } catch (error) {
+      setRequest(`重要性提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
   }
 
   // 两种删除（FR-09）：仅删当前 / 级联删除
@@ -348,35 +639,29 @@ export default function Home() {
     const descendants = getDescendants(node.id);
     setDeleteConfirm({ nodeId: node.id, nodeTitle: node.title, descendantCount: descendants.size });
   }
-  function deleteNodeOnly(nodeId: string) {
-    // 仅删当前节点：直接子节点上移到被删节点的父节点（或分类入口），保留后代
-    const node = nodes.find((n) => n.id === nodeId);
-    if (!node) return;
-    const newParentId = node.parentId;
-    setNodes((current) => current
-      .filter((n) => n.id !== nodeId)
-      .map((n) => n.parentId === nodeId ? { ...n, parentId: newParentId, originalParentId: n.originalParentId || n.parentId } : n));
-    setEdges((current) => current.filter((e) => e.source !== nodeId && e.target !== nodeId));
-    setRevision((value) => value + 1);
-    setSelectedId(null);
-    setDeleteConfirm(null);
-    setRequest("domain.delete · 仅删当前节点");
+  async function deleteNodeOnly(nodeId: string) {
+    try {
+      await commitOperations([{ type: "DELETE_NODE", nodeId, cascade: false }]);
+      setSelectedId(null);
+      setDeleteConfirm(null);
+      setRequest("domain.delete · 仅删当前节点 · 已提交");
+    } catch (error) {
+      setRequest(`删除失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
   }
-  function deleteCascade(nodeId: string) {
-    // 级联删除：删除节点 + 全部后代 + 相关语义关系
-    const descendants = getDescendants(nodeId);
-    descendants.add(nodeId);
-    const idsToDelete = descendants;
-    setNodes((current) => current.filter((n) => !idsToDelete.has(n.id)));
-    setEdges((current) => current.filter((e) => !idsToDelete.has(e.source) && !idsToDelete.has(e.target)));
-    setRevision((value) => value + 1);
-    setSelectedId(null);
-    setDeleteConfirm(null);
-    setRequest("domain.delete · 级联删除");
+  async function deleteCascade(nodeId: string) {
+    try {
+      await commitOperations([{ type: "DELETE_NODE", nodeId, cascade: true }]);
+      setSelectedId(null);
+      setDeleteConfirm(null);
+      setRequest("domain.delete · 级联删除 · 已提交");
+    } catch (error) {
+      setRequest(`删除失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
   }
 
   // 按层级自动整理（FR-03）：按生成深度分层排列，只重算坐标不改业务关系
-  function autoLayout() {
+  async function autoLayout() {
     const byDepth = new Map<number, Node[]>();
     nodes.forEach((node) => {
       const depth = node.depth || 1;
@@ -395,9 +680,29 @@ export default function Home() {
         });
       });
     });
-    setNodes((current) => current.map((node) => positionMap.has(node.id) ? { ...node, ...positionMap.get(node.id)! } : node));
-    setRevision((value) => value + 1);
-    setRequest("layout.auto · 按层级整理完成");
+    try {
+      await commitOperations(nodes.map((node) => ({
+        type: "UPDATE_NODE" as const,
+        nodeId: node.id,
+        patch: { position: positionMap.get(node.id) },
+      })));
+      setRequest("layout.auto · 按层级整理完成 · 已提交");
+    } catch (error) {
+      setRequest(`布局提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  async function finishDrag() {
+    if (!dragState) return;
+    const movedNode = nodes.find((node) => node.id === dragState.id);
+    setDragState(null);
+    setTimeout(() => { movedRef.current = false; }, 0);
+    if (!movedNode) return;
+    try {
+      await commitOperations([{ type: "UPDATE_NODE", nodeId: movedNode.id, patch: { position: { x: movedNode.x, y: movedNode.y } } }]);
+    } catch (error) {
+      setRequest(`位置保存失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
   }
 
   function openGrowth(parent: Node) {
@@ -445,40 +750,24 @@ export default function Home() {
     setGrowthError("");
     setRequest(`graph.grow.v2 · ${modeMeta?.label} · 四 Agent 运行中`);
     try {
-      const response = await fetch("/api/graph/grow", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          brief: {
-            product,
-            knownInformation,
-            ideaFragments: ideas.map((value) => value.trim()).filter(Boolean),
-            mustKeep: mustKeep.split(/[，、；;\n]/).map((value) => value.trim()).filter(Boolean),
-            mustAvoid: mustAvoid.split(/[，、；;\n]/).map((value) => value.trim()).filter(Boolean),
-            audience,
-            platform,
-            durationSeconds,
-            styles: styles.split(/[，、；;\n]/).map((value) => value.trim()).filter(Boolean),
-            hotMemes: hotMemes.split(/[，、；;\n]/).map((value) => value.trim()).filter(Boolean),
-            sellingPoints: featureRefs,
-          },
-          graphRevision: revision,
-          selectedNodeId: parent.id,
-          graph: {
-            nodes: nodes.map(({ id, title, description, category: nodeCategory, subtype, status, parentId, actorRefs, productFeatureRefs }) => ({ id, title, description, category: nodeCategory, subtype, status, parentId, actorRefs, productFeatureRefs })),
-            edges: edges.map(({ source, target, label }) => ({ source, target, label })),
-          },
-          growthIntent: { mode: growthMode, targetCategory: category, candidateCount: growthCount, instruction: growthInstruction.trim() },
-          subjectContract: { promotionSubject: product, narrativeSubjectIds: anchor ? [anchor.id] : [], productFeatureRefs: featureRefs },
-        }),
+      void anchor;
+      void featureRefs;
+      const workflow = await startWorkflow({
+        intent: "grow",
+        focusNodeId: parent.id,
+        needRag: true,
+        growthMode,
+        targetCategory: category,
+        candidateCount: growthCount,
+        growthInstruction: growthInstruction.trim(),
       });
-      const payload = await readApiEnvelope<{ candidates: GrowthCandidate[]; trace?: AgentTrace[]; repairCount: number }>(response);
-      if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "生长候选生成失败");
+      const result = workflow.candidateResult as { candidates: GrowthCandidate[]; trace?: AgentTrace[]; repairCount: number };
+      if (!result?.candidates?.length) throw new Error("Workflow 未返回生长候选");
       const additions: Node[] = [];
-      payload.result.candidates.forEach((candidate, index) => {
+      result.candidates.slice(0, growthCount).forEach((candidate) => {
         const position = freePosition(candidate.category, [...nodes, ...additions]);
         additions.push({
-          id: `${candidate.clientKey}-${Date.now()}-${index}`,
+          id: `node_${crypto.randomUUID()}`,
           title: candidate.title,
           description: candidate.description,
           category: candidate.category,
@@ -496,9 +785,9 @@ export default function Home() {
         });
       });
       setNodes((current) => [...current, ...additions]);
-      setAgentTrace(payload.result.trace || []);
-      setRevision((value) => value + 1);
-      setRequest(`graph.grow.v2 · ${modeMeta?.label} · ${additions.length} 个候选 · Repair ${payload.result.repairCount}`);
+      setPendingCandidateIds(new Set(additions.map((node) => node.id)));
+      setAgentTrace(result.trace || []);
+      setRequest(`Workflow 已暂停 · ${modeMeta?.label} · ${additions.length} 个候选 · Repair ${result.repairCount}`);
       setSelectedId(additions[0]?.id || parent.id);
       setGrowthOpen(false);
     } catch (error) {
@@ -527,31 +816,9 @@ export default function Home() {
       const sourceNode = nodes.find((n) => n.id === sourceId);
       const targetNode = nodes.find((n) => n.id === targetId);
       if (!sourceNode || !targetNode) throw new Error("端点节点不存在");
-      const response = await fetch("/api/graph/relations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          brief: {
-            product,
-            knownInformation,
-            ideaFragments: ideas.map((v) => v.trim()).filter(Boolean),
-            mustKeep: mustKeep.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            mustAvoid: mustAvoid.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            audience, platform, durationSeconds,
-            styles: styles.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            hotMemes: hotMemes.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            sellingPoints: sellingPoints.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-          },
-          sourceId, targetId,
-          source: { id: sourceNode.id, title: sourceNode.title, description: sourceNode.description, category: sourceNode.category, subtype: sourceNode.subtype, attributes: sourceNode.attributes },
-          target: { id: targetNode.id, title: targetNode.title, description: targetNode.description, category: targetNode.category, subtype: targetNode.subtype, attributes: targetNode.attributes },
-          existingRelations: edges.filter((e) => e.source === sourceId || e.target === sourceId || e.source === targetId || e.target === targetId).map((e) => e.label),
-          excludedRelations: [],
-        }),
-      });
-      const payload = await readApiEnvelope<{ relations: RelationCandidate[] }>(response);
-      if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "关系推荐失败");
-      const candidates: RelationCandidate[] = payload.result.relations || [];
+      const workflow = await startWorkflow({ intent: "relations", sourceNodeId: sourceId, targetNodeId: targetId, needRag: false });
+      const result = workflow.candidateResult as { relations?: RelationCandidate[] };
+      const candidates: RelationCandidate[] = result?.relations || [];
       setRelationCandidates(candidates);
       if (candidates.length) setDraftRelation({ label: candidates[0].label, direction: candidates[0].direction });
       // 先创建一条 pending 边，等用户确认
@@ -581,14 +848,32 @@ export default function Home() {
     setSelectedId(node.id);
   }
 
-  function saveRelation() {
+  async function saveRelation() {
     if (!editingEdgeId || !draftRelation.label.trim()) {
       setRelationError("请选择或输入关系");
       return;
     }
-    setEdges((current) => current.map((edge) => edge.id === editingEdgeId ? { ...edge, label: draftRelation.label.trim(), direction: draftRelation.direction, status: "adopted" } : edge));
-    setRevision((value) => value + 1);
-    setRequest("relation-suggestions.v1 · 用户确认");
+    const edge = edges.find((item) => item.id === editingEdgeId);
+    if (!edge) return;
+    try {
+      const operations: GraphOperation[] = [{ type: "ADD_EDGE", edge: {
+        id: edge.id,
+        sourceId: edge.source,
+        targetId: edge.target,
+        source: edge.source,
+        target: edge.target,
+        label: draftRelation.label.trim(),
+        type: edge.type,
+        direction: draftRelation.direction,
+        status: "adopted",
+      } }];
+      if (workflowThreadId) await resumeWorkflow(operations);
+      else await commitOperations(operations);
+      setRequest("Workflow relation · 用户确认 · 已提交");
+    } catch (error) {
+      setRelationError(error instanceof Error ? error.message : "关系提交失败");
+      return;
+    }
     setRelationSource(null);
     setEditingEdgeId(null);
     setDraftEdgeId(null);
@@ -612,30 +897,19 @@ export default function Home() {
     setConvergeError("");
     setRequest("graph.concept.v1 · Story Agent 收敛中");
     try {
-      const featureRefs = sellingPoints.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean);
-      const response = await fetch("/api/graph/concept", {
+      const workflow = await startWorkflow({ intent: "concept", needRag: false });
+      const concept = workflow.candidateResult as StoryConcept;
+      if (!concept?.concept) throw new Error("Workflow 未返回剧情");
+      setStoryConcept(concept);
+      if (!projectId) throw new Error("项目不存在");
+      const saveResponse = await fetch(`/api/projects/${projectId}/stories`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          brief: {
-            product,
-            knownInformation,
-            ideaFragments: ideas.map((v) => v.trim()).filter(Boolean),
-            mustKeep: mustKeep.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            mustAvoid: mustAvoid.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            audience, platform, durationSeconds,
-            styles: styles.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            hotMemes: hotMemes.split(/[，、；;\n]/).map((v) => v.trim()).filter(Boolean),
-            sellingPoints: featureRefs,
-          },
-          adoptedNodes: adopted.map(({ id, title, description, category, subtype, attributes }) => ({ id, title, description, category, subtype, attributes })),
-          adoptedEdges: adoptedEdges.map(({ source, target, label, direction }) => ({ source, target, label, direction })),
-        }),
+        body: JSON.stringify({ graphRevision: workflow.graphRevision, content: concept }),
       });
-      const payload = await readApiEnvelope<StoryConcept>(response);
-      if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "剧情收敛失败");
-      setStoryConcept(payload.result);
-      setTraceId(`story-v${revision + 1}`);
+      const savePayload = await readApiEnvelope<{ version: number }>(saveResponse);
+      if (!saveResponse.ok || !savePayload.ok) throw new Error(savePayload.error?.message || "剧情版本保存失败");
+      setTraceId(`story-v${savePayload.result.version}`);
       setRequest("graph.concept.v1 · 引用校验通过");
       setStage("output");
     } catch (error) {
@@ -731,8 +1005,8 @@ export default function Home() {
                 setNodes((current) => current.map((node) => node.id === dragState.id ? { ...node, x: nx, y: ny } : node));
               }
             }}
-            onMouseUp={() => { if (dragState) { setDragState(null); setRevision((value) => value + 1); setTimeout(() => { movedRef.current = false; }, 0); } }}
-            onMouseLeave={() => { if (dragState) { setDragState(null); setRevision((value) => value + 1); setTimeout(() => { movedRef.current = false; }, 0); } }}
+            onMouseUp={() => { void finishDrag(); }}
+            onMouseLeave={() => { void finishDrag(); }}
             onClick={() => { if ((relationSource || editingEdgeId) && !movedRef.current) cancelDraftRelation(); }}
           >
             <div className="source-node"><span>推广对象</span><strong>{product}</strong></div>

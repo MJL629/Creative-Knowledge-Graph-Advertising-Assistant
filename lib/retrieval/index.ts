@@ -1,6 +1,7 @@
 import { AppError, ERROR_CODES, type RetrievalProvider } from "../contracts";
 import { getRuntimeEnv, type RuntimeEnvironment } from "../runtime/env";
 import { MockRetrievalProvider } from "./mock-retrieval-provider";
+import { HttpRetrievalProvider } from "./http-retrieval-provider";
 
 const mockRetrievalProvider = new MockRetrievalProvider();
 type RealRetrievalFactory = (env: RuntimeEnvironment) => RetrievalProvider | Promise<RetrievalProvider>;
@@ -15,6 +16,13 @@ export async function getRetrievalProvider(): Promise<RetrievalProvider> {
   const provider = String(env.RETRIEVAL_PROVIDER ?? "mock").toLowerCase();
   if (provider === "mock") return mockRetrievalProvider;
   if (provider === "real" && realRetrievalFactory) return realRetrievalFactory(env);
+  if (provider === "real") {
+    return new HttpRetrievalProvider({
+      endpoint: env.RETRIEVAL_ENDPOINT ?? "",
+      apiKey: env.RETRIEVAL_API_KEY,
+      timeoutMs: Number(env.RETRIEVAL_TIMEOUT_MS ?? 15_000),
+    });
+  }
   throw new AppError(
     ERROR_CODES.INTERNAL_ERROR,
     provider === "real" ? "Real RetrievalProvider is not installed" : `Unsupported RETRIEVAL_PROVIDER: ${provider}`,
@@ -22,4 +30,4 @@ export async function getRetrievalProvider(): Promise<RetrievalProvider> {
   );
 }
 
-export { MockRetrievalProvider };
+export { HttpRetrievalProvider, MockRetrievalProvider };

@@ -6,11 +6,12 @@ import type {
   GraphSnapshot,
   RetrievalResult,
 } from "../contracts";
-import type { HumanDecision, WorkflowIntent, WorkflowNextAction } from "./workflow-types";
+import type { HumanDecision, WorkflowGrowthMode, WorkflowIntent, WorkflowNextAction } from "./workflow-types";
 
 export const CreativeStateAnnotation = Annotation.Root({
   projectId: Annotation<string>(),
   threadId: Annotation<string>(),
+  requestId: Annotation<string | undefined>(),
   intent: Annotation<WorkflowIntent>(),
   brief: Annotation<CreativeBrief | undefined>(),
   graphRevision: Annotation<number>(),
@@ -18,6 +19,10 @@ export const CreativeStateAnnotation = Annotation.Root({
   focusNodeId: Annotation<string | undefined>(),
   sourceNodeId: Annotation<string | undefined>(),
   targetNodeId: Annotation<string | undefined>(),
+  growthMode: Annotation<WorkflowGrowthMode | undefined>(),
+  targetCategory: Annotation<string | undefined>(),
+  candidateCount: Annotation<2 | 3 | undefined>(),
+  growthInstruction: Annotation<string | undefined>(),
   needRag: Annotation<boolean>(),
   retrievalQuery: Annotation<string | undefined>(),
   retrievedContext: Annotation<RetrievalResult | undefined>(),

@@ -116,7 +116,10 @@ async function replaceGraph(sql: postgres.TransactionSql, snapshot: GraphSnapsho
   await sql`DELETE FROM graph_edges WHERE project_id = ${snapshot.projectId}`;
   await sql`DELETE FROM graph_nodes WHERE project_id = ${snapshot.projectId}`;
 
-  for (const node of snapshot.nodes) {
+  // Self-referencing parent FKs require ancestors to be inserted first. Reads are
+  // ordered by timestamp/id, so preserve business hierarchy explicitly here.
+  const orderedNodes = [...snapshot.nodes].sort((left, right) => left.depth - right.depth || left.id.localeCompare(right.id));
+  for (const node of orderedNodes) {
     await sql`
       INSERT INTO graph_nodes (
         id, project_id, type, subtype, category, label, title, description, status,
@@ -173,12 +176,17 @@ export class PostgresProjectRepository implements ProjectRepository {
       return await operation();
     } catch (error) {
       if (error instanceof AppError) throw error;
-      const databaseCode = typeof error === "object" && error && "code" in error ? String(error.code) : undefined;
+      const databaseError = typeof error === "object" && error ? error as Record<string, unknown> : undefined;
+      const databaseCode = databaseError?.code ? String(databaseError.code) : undefined;
       throw new AppError(
         ERROR_CODES.INTERNAL_ERROR,
         "PostgreSQL persistence is unavailable",
         503,
-        databaseCode ? { databaseCode } : undefined,
+        databaseCode ? {
+          databaseCode,
+          ...(databaseError?.constraint_name ? { constraint: String(databaseError.constraint_name) } : {}),
+          ...(databaseError?.detail ? { detail: String(databaseError.detail) } : {}),
+        } : undefined,
       );
     }
   }
@@ -249,6 +257,19 @@ export class PostgresProjectRepository implements ProjectRepository {
         SELECT id, graph_revision FROM projects WHERE id = ${input.projectId} FOR UPDATE
       `;
       if (!projects.length) throw new AppError(ERROR_CODES.PROJECT_NOT_FOUND, "Project not found", 404);
+      const requestHash = JSON.stringify({ expectedRevision: input.expectedRevision, operations: input.operations });
+      if (input.operationId) {
+        const previous = await tx<Row[]>`
+          SELECT request_hash, snapshot FROM graph_commit_idempotency
+          WHERE project_id = ${input.projectId} AND operation_id = ${input.operationId}
+        `;
+        if (previous.length) {
+          if (String(previous[0].request_hash) !== requestHash) {
+            throw new AppError(ERROR_CODES.GRAPH_OPERATION_INVALID, "operationId was already used with a different request", 409);
+          }
+          return previous[0].snapshot as GraphSnapshot;
+        }
+      }
       const actualRevision = Number(projects[0].graph_revision);
       const current = await readGraph(tx, input.projectId, actualRevision);
       if (!current) throw new AppError(ERROR_CODES.GRAPH_NOT_FOUND, "Graph not found", 404);
@@ -271,6 +292,12 @@ export class PostgresProjectRepository implements ProjectRepository {
       `;
       const persisted = await readGraph(tx, input.projectId, next.revision);
       if (!persisted) throw new AppError(ERROR_CODES.GRAPH_NOT_FOUND, "Graph not found after commit", 500);
+      if (input.operationId) {
+        await tx`
+          INSERT INTO graph_commit_idempotency (project_id, operation_id, request_hash, snapshot)
+          VALUES (${input.projectId}, ${input.operationId}, ${requestHash}, ${tx.json(toJsonValue(persisted))})
+        `;
+      }
       return persisted;
     }));
   }

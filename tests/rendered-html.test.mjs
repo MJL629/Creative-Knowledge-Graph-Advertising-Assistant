@@ -25,6 +25,9 @@ async function fetchWorker(path, init = {}) {
     {
       ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
       CREATIVE_MODEL_PROVIDER: "mock",
+      PERSISTENCE_PROVIDER: "memory",
+      WORKFLOW_CHECKPOINTER: "memory",
+      NODE_ENV: "test",
     },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -58,7 +61,8 @@ test("initial and growth routes are wired to their agent pipelines", async () =>
 
   assert.match(initialRoute, /getCreativeAgentGateway/);
   assert.match(growthRoute, /getCreativeAgentGateway/);
-  assert.match(page, /fetch\("\/api\/graph\/grow"/);
+  assert.match(page, /fetch\("\/api\/workflow\/start"/);
+  assert.match(page, /fetch\("\/api\/workflow\/resume"/);
   assert.match(growthPipeline, /supervisorAgent/);
   assert.match(growthPipeline, /creativeAgent/);
   assert.match(growthPipeline, /criticAgent/);
@@ -78,9 +82,9 @@ test("relations and concept routes are wired to their pipelines (PRD 8.2)", asyn
   assert.match(conceptRoute, /getCreativeAgentGateway/);
   assert.match(graphPipeline, /runRelationPipeline/);
   assert.match(graphPipeline, /runStoryConvergePipeline/);
-  // 前端确实调用了这两条新 API
-  assert.match(page, /fetch\("\/api\/graph\/relations"/);
-  assert.match(page, /fetch\("\/api\/graph\/concept"/);
+  // 兼容 API 保留，正式 UI 通过 Workflow API 编排。
+  assert.match(page, /intent: "relations"/);
+  assert.match(page, /intent: "concept"/);
 });
 
 test("mock provider exists and is routed (PRD 9.1 离线演示)", async () => {
@@ -97,6 +101,9 @@ test("session persistence is wired (FR-11)", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /localStorage\.getItem/);
   assert.match(page, /localStorage\.setItem/);
+  assert.match(page, /\/api\/projects/);
+  assert.match(page, /\/api\/graph\/commit/);
+  assert.doesNotMatch(page, /localStorage\.setItem\(SESSION_KEY, JSON\.stringify/);
   // 两种删除（FR-09）与节点编辑（FR-04）存在
   assert.match(page, /deleteNodeOnly/);
   assert.match(page, /deleteCascade/);
@@ -217,17 +224,38 @@ test("graph API reads empty graph, commits operations and guards revisions", asy
   assert.equal(committed.payload.result.revision, 1);
   assert.equal(committed.payload.result.nodes[0].status, "adopted");
 
+  const idempotent = await api("/api/graph/commit", {
+    method: "POST",
+    body: {
+      projectId,
+      expectedRevision: 1,
+      operationId: "rendered-idempotency",
+      operations: [{ type: "UPDATE_NODE", nodeId: "node_test_1", patch: { importance: 4 } }],
+    },
+  });
+  const replay = await api("/api/graph/commit", {
+    method: "POST",
+    body: {
+      projectId,
+      expectedRevision: 1,
+      operationId: "rendered-idempotency",
+      operations: [{ type: "UPDATE_NODE", nodeId: "node_test_1", patch: { importance: 4 } }],
+    },
+  });
+  assert.equal(idempotent.payload.result.revision, 2);
+  assert.equal(replay.payload.result.revision, 2);
+
   const conflict = await api("/api/graph/commit", {
     method: "POST",
-    body: { projectId, expectedRevision: 0, operations: [] },
+    body: { projectId, expectedRevision: 1, operations: [] },
   });
   assert.equal(conflict.response.status, 409);
   assert.equal(conflict.payload.error.code, "GRAPH_REVISION_CONFLICT");
-  assert.equal(conflict.payload.error.details.actualRevision, 1);
+  assert.equal(conflict.payload.error.details.actualRevision, 2);
 
   const invalid = await api("/api/graph/commit", {
     method: "POST",
-    body: { projectId, expectedRevision: 1, operations: [{ type: "ADOPT_NODE", nodeId: "missing" }] },
+    body: { projectId, expectedRevision: 2, operations: [{ type: "ADOPT_NODE", nodeId: "missing" }] },
   });
   assert.equal(invalid.response.status, 400);
   assert.equal(invalid.payload.error.code, "GRAPH_OPERATION_INVALID");
@@ -336,4 +364,118 @@ test("existing agent APIs still work in mock mode", async () => {
   });
   assert.equal(concept.response.status, 200);
   assert.equal(concept.payload.ok, true);
+});
+
+test("HTTP workflow completes divergence, HITL, growth, relation, story and reload", async () => {
+  const created = await api("/api/projects", {
+    method: "POST",
+    body: {
+      name: "HTTP workflow fixture",
+      brief: {
+        product: "夏日水枪节",
+        knownFacts: ["多人互动"],
+        ideaFragments: ["透明王冠", "倒计时挑战"],
+        sellingPoints: ["多人同屏"],
+      },
+    },
+  });
+  const projectId = created.payload.result.id;
+
+  const started = await api("/api/workflow/start", {
+    method: "POST",
+    body: { projectId, intent: "start", needRag: true },
+  });
+  assert.equal(started.response.status, 202, JSON.stringify(started.payload));
+  assert.equal(started.payload.result.interrupts.length, 1);
+  const threadId = started.payload.result.threadId;
+  const firstCandidate = started.payload.result.candidateResult.candidates[0];
+  const rootId = "http-root";
+
+  const pausedReload = await api(`/api/workflow/${threadId}`);
+  assert.equal(pausedReload.payload.result.interrupts.length, 1);
+
+  const committedRoot = await api("/api/workflow/resume", {
+    method: "POST",
+    body: {
+      threadId,
+      decision: {
+        action: "commit",
+        operations: [
+          { type: "ADD_NODE", node: { id: rootId, label: firstCandidate.title, description: firstCandidate.description, type: firstCandidate.category } },
+          { type: "ADOPT_NODE", nodeId: rootId },
+        ],
+      },
+    },
+  });
+  assert.deepEqual(committedRoot.payload.result.next, []);
+
+  const growth = await api("/api/workflow/start", {
+    method: "POST",
+    body: { projectId, intent: "grow", focusNodeId: rootId, growthMode: "next_event", targetCategory: "story_event", candidateCount: 2 },
+  });
+  assert.equal(growth.response.status, 202, JSON.stringify(growth.payload));
+  assert.equal(growth.payload.result.interrupts.length, 1);
+  const growthCandidate = growth.payload.result.candidateResult.candidates[0];
+  const childId = "http-child";
+  await api("/api/workflow/resume", {
+    method: "POST",
+    body: {
+      threadId: growth.payload.result.threadId,
+      decision: {
+        action: "commit",
+        operations: [
+          { type: "ADD_NODE", node: { id: childId, label: growthCandidate.title, description: growthCandidate.description, type: growthCandidate.category, parentId: rootId, depth: 2 } },
+          { type: "ADOPT_NODE", nodeId: childId },
+        ],
+      },
+    },
+  });
+
+  const relations = await api("/api/workflow/start", {
+    method: "POST",
+    body: { projectId, intent: "relations", sourceNodeId: rootId, targetNodeId: childId },
+  });
+  assert.equal(relations.payload.result.interrupts.length, 1);
+  const relation = relations.payload.result.candidateResult.relations[0];
+  await api("/api/workflow/resume", {
+    method: "POST",
+    body: {
+      threadId: relations.payload.result.threadId,
+      decision: {
+        action: "commit",
+        operations: [
+          { type: "ADD_EDGE", edge: { id: "http-edge", sourceId: rootId, targetId: childId, label: relation.label, direction: relation.direction } },
+          { type: "ADOPT_EDGE", edgeId: "http-edge" },
+        ],
+      },
+    },
+  });
+
+  const concept = await api("/api/workflow/start", { method: "POST", body: { projectId, intent: "concept" } });
+  assert.deepEqual(concept.payload.result.next, []);
+  assert.ok(concept.payload.result.candidateResult.concept);
+  const graph = await api(`/api/projects/${projectId}/graph`);
+  assert.equal(graph.payload.result.revision, 3);
+  assert.equal(graph.payload.result.nodes.filter((node) => node.status === "adopted").length, 2);
+  assert.equal(graph.payload.result.edges[0].status, "adopted");
+
+  const saved = await api(`/api/projects/${projectId}/stories`, {
+    method: "POST",
+    body: { graphRevision: graph.payload.result.revision, content: concept.payload.result.candidateResult },
+  });
+  assert.equal(saved.payload.result.version, 1);
+  const stories = await api(`/api/projects/${projectId}/stories`);
+  assert.equal(stories.payload.result.length, 1);
+
+  const traces = await api(`/api/traces?projectId=${projectId}`);
+  assert.equal(traces.response.status, 200);
+  assert.ok(traces.payload.result.some((trace) => trace.workflowNode === "creative_divergence"));
+  assert.ok(traces.payload.result.some((trace) => trace.workflowNode === "story_convergence"));
+
+  const health = await api("/api/health");
+  assert.equal(health.payload.result.application, "ok");
+  assert.equal(health.payload.result.persistence, "memory");
+  assert.equal(health.payload.result.workflow, "ok");
+  assert.equal(health.payload.result.modelProvider, "configured");
+  assert.equal(health.payload.result.retrievalProvider, "mock");
 });

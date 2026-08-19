@@ -1,5 +1,7 @@
 import { END, START, StateGraph } from "@langchain/langgraph";
 
+import "./async-context";
+
 import { CreativeStateAnnotation } from "./creative-state";
 import { createWorkflowNodes, type WorkflowDependencies } from "./nodes/core-nodes";
 import { routeAfterCommit, routeAfterContext, routeCreativeIntent } from "./routing/workflow-router";

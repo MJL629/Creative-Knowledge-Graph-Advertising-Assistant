@@ -10,6 +10,9 @@ let runtimePromise: Promise<WorkflowRuntime> | undefined;
 async function createRuntime() {
   const env = await getRuntimeEnv();
   const provider = String(env.WORKFLOW_CHECKPOINTER ?? "memory").toLowerCase();
+  if (env.NODE_ENV === "production" && provider !== "postgres") {
+    throw new Error("Production requires WORKFLOW_CHECKPOINTER=postgres");
+  }
   const checkpointerProvider = provider === "postgres"
     ? await PostgresWorkflowCheckpointerProvider.create(
         env.WORKFLOW_DATABASE_URL ?? env.DATABASE_URL ?? "",

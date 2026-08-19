@@ -3,6 +3,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import type { CreativeBrief, GraphCommitOperation, GraphSnapshot } from "../contracts";
 
 export type WorkflowIntent = "start" | "grow" | "relations" | "concept";
+export type WorkflowGrowthMode = "deepen" | "next_event" | "add_conflict" | "add_element" | "twist" | "parallel";
 export type WorkflowNextAction = WorkflowIntent | "commit" | "stop";
 
 export type HumanDecision =
@@ -15,18 +16,27 @@ export type HumanDecision =
 export type WorkflowStartInput = {
   projectId: string;
   threadId?: string;
+  requestId?: string;
   intent?: WorkflowIntent;
   focusNodeId?: string;
   sourceNodeId?: string;
   targetNodeId?: string;
   needRag?: boolean;
+  growthMode?: WorkflowGrowthMode;
+  targetCategory?: string;
+  candidateCount?: 2 | 3;
+  growthInstruction?: string;
 };
 
 export type WorkflowPublicState = {
   projectId: string;
   threadId: string;
+  requestId?: string;
   intent: WorkflowIntent;
   graphRevision: number;
+  focusNodeId?: string;
+  sourceNodeId?: string;
+  targetNodeId?: string;
   graphSnapshot?: GraphSnapshot;
   brief?: CreativeBrief;
   candidateResult?: unknown;

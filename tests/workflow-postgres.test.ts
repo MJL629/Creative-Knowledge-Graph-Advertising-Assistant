@@ -44,7 +44,10 @@ const retrieval: RetrievalProvider = {
 
 test("durable full chain resumes after runtime recreation", { skip: !databaseUrl }, async () => {
   assert.ok(databaseUrl);
-  const migration = await readFile(new URL("../db/migrations/0001_core_persistence.sql", import.meta.url), "utf8");
+  const migration = [
+    await readFile(new URL("../db/migrations/0001_core_persistence.sql", import.meta.url), "utf8"),
+    await readFile(new URL("../db/migrations/0002_observability_idempotency.sql", import.meta.url), "utf8"),
+  ].join("\n");
   const admin = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
   await admin.begin((tx) => tx.unsafe(migration));
   const repository1 = new PostgresProjectRepository(databaseUrl);

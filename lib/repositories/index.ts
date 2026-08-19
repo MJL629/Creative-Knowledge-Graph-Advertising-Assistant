@@ -11,7 +11,12 @@ const postgresRepositories = new Map<string, PostgresProjectRepository>();
 async function resolveRepository(): Promise<ProjectRepository> {
   const env = await getRuntimeEnv();
   const provider = String(env.PERSISTENCE_PROVIDER ?? "memory").toLowerCase();
-  if (provider === "memory") return memoryRepository;
+  if (provider === "memory") {
+    if (env.NODE_ENV === "production") {
+      throw new AppError(ERROR_CODES.INTERNAL_ERROR, "Production requires PERSISTENCE_PROVIDER=postgres", 503);
+    }
+    return memoryRepository;
+  }
   if (provider !== "postgres") {
     throw new AppError(ERROR_CODES.INTERNAL_ERROR, `Unsupported PERSISTENCE_PROVIDER: ${provider}`, 503);
   }

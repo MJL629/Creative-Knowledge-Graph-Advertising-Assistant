@@ -13,7 +13,19 @@ type DeepSeekEnvironment = {
   DEEPSEEK_MODEL?: string;
   DEEPSEEK_MAX_TOKENS?: string;
   CREATIVE_MODEL_PROVIDER?: string;
+  OPENAI_RETRY_MAX?: string;
 };
+
+function waitForRetry(delayMs: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(resolve, delayMs);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }, { once: true });
+  });
+}
 
 /**
  * 统一 LLM 入口：根据 CREATIVE_MODEL_PROVIDER 切 mock / deepseek。
@@ -37,26 +49,39 @@ export async function callDeepSeekJson<T>(messages: ChatMessage[], signal?: Abor
   const model = runtimeEnv.OPENAI_MODEL ?? process.env.OPENAI_MODEL ?? runtimeEnv.DEEPSEEK_MODEL ?? process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
   const maxTokens = Number(runtimeEnv.OPENAI_MAX_TOKENS ?? process.env.OPENAI_MAX_TOKENS ?? runtimeEnv.DEEPSEEK_MAX_TOKENS ?? process.env.DEEPSEEK_MAX_TOKENS ?? 4096);
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      response_format: { type: "json_object" },
-      temperature: 0.7,
-      max_tokens: maxTokens,
-      stream: false,
-    }),
-    signal,
-  });
+  const retryMax = Math.max(0, Math.min(Number(runtimeEnv.OPENAI_RETRY_MAX ?? 2), 3));
+  let response: Response | undefined;
+  for (let attempt = 0; attempt <= retryMax; attempt += 1) {
+    try {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          response_format: { type: "json_object" },
+          temperature: 0.7,
+          max_tokens: maxTokens,
+          stream: false,
+        }),
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted || attempt === retryMax) throw error;
+      await waitForRetry(150 * (2 ** attempt), signal);
+      continue;
+    }
+    if (response.ok || ![429, 500, 502, 503, 504].includes(response.status) || attempt === retryMax) break;
+    await response.body?.cancel();
+    await waitForRetry(150 * (2 ** attempt), signal);
+  }
 
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`DeepSeek 请求失败 (${response.status}): ${detail.slice(0, 300)}`);
+  if (!response?.ok) {
+    const detail = response ? await response.text() : "no response";
+    throw new Error(`DeepSeek 请求失败 (${response?.status ?? "network"}): ${detail.slice(0, 300)}`);
   }
 
   const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };

@@ -48,6 +48,16 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    resolve: {
+      // LangGraph interrupt/resume relies on shared async-local singletons.
+      // Dedupe prevents the RSC/SSR build from bundling isolated copies.
+      dedupe: [
+        "@langchain/core",
+        "@langchain/langgraph",
+        "@langchain/langgraph-checkpoint",
+        "@langchain/langgraph-checkpoint-postgres",
+      ],
+    },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,

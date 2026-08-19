@@ -31,7 +31,14 @@ export function routeError(error: unknown, fallbackCode: string = ERROR_CODES.IN
     return errorJson(error.code, error.message, error.status, error.details, requestId);
   }
 
+  if (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")) {
+    return errorJson(ERROR_CODES.PROVIDER_TIMEOUT, "External provider timed out", 504, undefined, requestId);
+  }
+
   const message = error instanceof Error ? error.message : "Internal error";
+  if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+    return errorJson(ERROR_CODES.PROVIDER_TIMEOUT, "External provider timed out", 504, undefined, requestId);
+  }
   return errorJson(fallbackCode, message, fallbackStatus, undefined, requestId);
 }
 

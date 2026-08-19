@@ -3,6 +3,7 @@ import type { StoryConceptRequest } from "../../../../lib/agents/graph-pipeline"
 import { getRequestId, okJson, routeError } from "../../../../lib/api/response";
 import { ERROR_CODES } from "../../../../lib/contracts";
 import { getRuntimeEnv } from "../../../../lib/runtime/env";
+import { traceCall } from "../../../../lib/observability/trace";
 
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
@@ -12,7 +13,8 @@ export async function POST(request: Request) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const body = await request.json() as StoryConceptRequest;
-    const result = await getCreativeAgentGateway().convergeStory(body, { requestId }, controller.signal);
+    const result = await traceCall("story", "story_convergence", { requestId }, () =>
+      getCreativeAgentGateway().convergeStory(body, { requestId }, controller.signal));
     return okJson(result, {}, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : "未知错误";

@@ -40,4 +40,41 @@ test("memory repository preserves revision and rollback semantics", async () => 
   const afterRollback = await repository.getGraph(project.id);
   assert.equal(afterRollback?.revision, 1);
   assert.equal(afterRollback?.nodes.some((node) => node.id === "rolled-back"), false);
+
+  const operationId = `memory-${crypto.randomUUID()}`;
+  const idempotent = await repository.commitGraph({
+    projectId: project.id,
+    expectedRevision: 1,
+    operationId,
+    operations: [{ type: "UPDATE_NODE", nodeId: "n1", patch: { importance: 5 } }],
+  });
+  const replay = await repository.commitGraph({
+    projectId: project.id,
+    expectedRevision: 1,
+    operationId,
+    operations: [{ type: "UPDATE_NODE", nodeId: "n1", patch: { importance: 5 } }],
+  });
+  assert.deepEqual(replay, idempotent);
+
+  const hierarchy = await repository.commitGraph({
+    projectId: project.id,
+    expectedRevision: idempotent.revision,
+    operations: [
+      { type: "ADD_NODE", node: { id: "parent", label: "Parent" } },
+      { type: "ADD_NODE", node: { id: "child", label: "Child", parentId: "parent", depth: 2 } },
+      { type: "ADD_NODE", node: { id: "grandchild", label: "Grandchild", parentId: "child", depth: 3 } },
+    ],
+  });
+  const currentOnly = await repository.commitGraph({
+    projectId: project.id,
+    expectedRevision: hierarchy.revision,
+    operations: [{ type: "DELETE_NODE", nodeId: "child", cascade: false }],
+  });
+  assert.equal(currentOnly.nodes.find((node) => node.id === "grandchild")?.parentId, "parent");
+  const cascade = await repository.commitGraph({
+    projectId: project.id,
+    expectedRevision: currentOnly.revision,
+    operations: [{ type: "DELETE_NODE", nodeId: "parent", cascade: true }],
+  });
+  assert.equal(cascade.nodes.some((node) => ["parent", "grandchild"].includes(node.id)), false);
 });

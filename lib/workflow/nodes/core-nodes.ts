@@ -8,6 +8,7 @@ import {
   type RetrievalProvider,
 } from "../../contracts";
 import type { ProjectRepository } from "../../repositories/project-repository";
+import { traceCall } from "../../observability/trace";
 import type { CreativeState, CreativeStateUpdate } from "../creative-state";
 import { buildConceptContext, buildGrowthContext, buildRelationContext, buildStartContext } from "../context-builder";
 import type { HumanDecision } from "../workflow-types";
@@ -75,12 +76,22 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
 
     async retrieveContext(state: CreativeState): Promise<CreativeStateUpdate> {
       try {
+        const metadata: { retrievalHitCount?: number } = {};
         return {
-          retrievedContext: await retrievalProvider.retrieve({
+          retrievedContext: await traceCall("retriever", "retrieve_context", {
             projectId: state.projectId,
-            query: state.retrievalQuery ?? state.brief?.product ?? "creative context",
-            topK: 5,
-          }),
+            requestId: state.requestId,
+            threadId: state.threadId,
+            graphRevision: state.graphRevision,
+          }, async () => {
+            const result = await retrievalProvider.retrieve({
+              projectId: state.projectId,
+              query: state.retrievalQuery ?? state.brief?.product ?? "creative context",
+              topK: 5,
+            });
+            metadata.retrievalHitCount = result.hits.length;
+            return result;
+          }, metadata),
         };
       } catch (error) {
         return {
@@ -93,10 +104,17 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
     async creativeDivergence(state: CreativeState): Promise<CreativeStateUpdate> {
       const { brief } = requireGraph(state);
       return {
-        candidateResult: await agentGateway.initialDivergence(buildStartContext(brief, state.retrievedContext), {
+        candidateResult: await traceCall("creative", "creative_divergence", {
           projectId: state.projectId,
           graphRevision: state.graphRevision,
-        }),
+          requestId: state.requestId,
+          threadId: state.threadId,
+        }, () => agentGateway.initialDivergence(buildStartContext(brief, state.retrievedContext), {
+          projectId: state.projectId,
+          graphRevision: state.graphRevision,
+          requestId: state.requestId,
+          threadId: state.threadId,
+        })),
       };
     },
 
@@ -106,7 +124,9 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
       if (!context) throw new AppError(ERROR_CODES.GRAPH_OPERATION_INVALID, "Growth focus node not found", 400);
       const focus = context.focus;
       return {
-        candidateResult: await agentGateway.growNode({
+        candidateResult: await traceCall("creative", "creative_growth", {
+          projectId: state.projectId, graphRevision: graph.revision, requestId: state.requestId, threadId: state.threadId,
+        }, () => agentGateway.growNode({
           brief,
           graphRevision: graph.revision,
           selectedNodeId: focus.id,
@@ -114,14 +134,19 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
             nodes: context.nodes,
             edges: context.edges,
           },
-          growthIntent: { mode: "deepen", targetCategory: focus.category ?? focus.type, candidateCount: 2 },
+          growthIntent: {
+            mode: state.growthMode ?? "deepen",
+            targetCategory: state.targetCategory ?? focus.category ?? focus.type,
+            candidateCount: state.candidateCount ?? 2,
+            instruction: state.growthInstruction,
+          },
           subjectContract: {
             promotionSubject: brief.product,
             narrativeSubjectIds: [focus.id],
-            productFeatureRefs: focus.productFeatureRefs ?? [],
+            productFeatureRefs: focus.productFeatureRefs?.length ? focus.productFeatureRefs : brief.sellingPoints ?? [],
           },
           retrievedContext: state.retrievedContext,
-        }, { projectId: state.projectId, graphRevision: graph.revision }),
+        }, { projectId: state.projectId, graphRevision: graph.revision, requestId: state.requestId, threadId: state.threadId })),
       };
     },
 
@@ -131,7 +156,9 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
       const target = graph.nodes.find((node) => node.id === state.targetNodeId);
       if (!source || !target) throw new AppError(ERROR_CODES.GRAPH_OPERATION_INVALID, "Relation endpoints not found", 400);
       return {
-        candidateResult: await agentGateway.suggestRelations({
+        candidateResult: await traceCall("creative", "relation_suggestion", {
+          projectId: state.projectId, graphRevision: graph.revision, requestId: state.requestId, threadId: state.threadId,
+        }, () => agentGateway.suggestRelations({
           brief,
           sourceId: source.id,
           targetId: target.id,
@@ -140,7 +167,7 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
           existingRelations: graph.edges.map((edge) => edge.label),
           excludedRelations: graph.edges.filter((edge) => edge.status === "excluded").map((edge) => edge.label),
           context: buildRelationContext(graph, source.id, target.id),
-        }, { projectId: state.projectId, graphRevision: graph.revision }),
+        }, { projectId: state.projectId, graphRevision: graph.revision, requestId: state.requestId, threadId: state.threadId })),
       };
     },
 
@@ -181,6 +208,7 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
       const graph = await repository.commitGraph({
         projectId: state.projectId,
         expectedRevision: state.graphRevision,
+        operationId: `${state.threadId}:${state.graphRevision}:${state.nextAction}`,
         operations: state.pendingOperations,
       });
       return { graphSnapshot: graph, graphRevision: graph.revision, pendingOperations: [] };
@@ -197,10 +225,14 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
         brief: project.brief,
         graphSnapshot: graph,
         graphRevision: graph.revision,
-        candidateResult: await agentGateway.convergeStory({ brief: project.brief, adoptedNodes, adoptedEdges }, {
+        candidateResult: await traceCall("story", "story_convergence", {
+          projectId: state.projectId, graphRevision: graph.revision, requestId: state.requestId, threadId: state.threadId,
+        }, () => agentGateway.convergeStory({ brief: project.brief, adoptedNodes, adoptedEdges }, {
           projectId: state.projectId,
           graphRevision: graph.revision,
-        }),
+          requestId: state.requestId,
+          threadId: state.threadId,
+        })),
       };
     },
   };

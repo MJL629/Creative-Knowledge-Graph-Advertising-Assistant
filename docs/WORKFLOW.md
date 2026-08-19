@@ -36,4 +36,6 @@ The original `/api/graph/diverge`, `/grow`, `/relations`, and `/concept` contrac
 
 ## Checkpoints
 
-C2 uses `MemorySaver` through `WorkflowCheckpointerProvider`. It proves interrupt/resume behavior but is process-local. Production durable checkpoint configuration is explicit and separate from the PostgreSQL business tables (`projects`, `graph_nodes`, `graph_edges`, and `story_versions`).
+Local tests may use `MemorySaver`. Production requires the PostgreSQL checkpointer and keeps workflow execution state separate from business tables (`projects`, `graph_nodes`, `graph_edges`, and `story_versions`). The durable integration test recreates both repository and runtime, reloads the paused thread, and resumes without rerunning initial divergence.
+
+Model and retrieval calls emit best-effort traces keyed by `requestId`, `threadId`, and `projectId`. Trace persistence never blocks graph commits. Retrieval failure is recorded and routed through the non-RAG path without changing the confirmed graph.

@@ -40,7 +40,7 @@ Failure:
 
 ## Error Code
 
-`VALIDATION_ERROR`, `PROJECT_NOT_FOUND`, `GRAPH_NOT_FOUND`, `GRAPH_REVISION_CONFLICT`, `GRAPH_OPERATION_INVALID`, `GRAPH_DIVERGENCE_FAILED`, `GROWTH_INPUT_INVALID`, `GRAPH_GROWTH_FAILED`, `RELATIONS_INPUT_INVALID`, `RELATIONS_FAILED`, `CONCEPT_INPUT_INVALID`, `CONCEPT_FAILED`, `STORY_NOT_FOUND`, `INTERNAL_ERROR`.
+`VALIDATION_ERROR`, `PROJECT_NOT_FOUND`, `GRAPH_NOT_FOUND`, `GRAPH_REVISION_CONFLICT`, `GRAPH_OPERATION_INVALID`, `GRAPH_DIVERGENCE_FAILED`, `GROWTH_INPUT_INVALID`, `GRAPH_GROWTH_FAILED`, `RELATIONS_INPUT_INVALID`, `RELATIONS_FAILED`, `CONCEPT_INPUT_INVALID`, `CONCEPT_FAILED`, `PROVIDER_TIMEOUT`, `RETRIEVAL_UNAVAILABLE`, `RETRIEVAL_INVALID_RESPONSE`, `CHECKPOINT_UNAVAILABLE`, `STORY_NOT_FOUND`, `INTERNAL_ERROR`.
 
 ## APIs
 
@@ -49,11 +49,15 @@ Failure:
 - `POST /api/projects`: create a project from `{ "name": "...", "brief": { ... } }`.
 - `GET /api/projects/:projectId`: get one project.
 - `PATCH /api/projects/:projectId`: update `name` and/or `brief`.
-- `DELETE /api/projects/:projectId`: delete the project and its memory graph/stories.
+- `DELETE /api/projects/:projectId`: delete the project and cascade its graph, stories, and idempotency records.
 - `GET /api/projects/:projectId/graph`: read the current graph snapshot.
 - `POST /api/graph/commit`: apply graph operations with optimistic revision control.
 - `GET /api/projects/:projectId/stories`: list story versions.
 - `POST /api/projects/:projectId/stories`: save a story version from `{ "graphRevision": 1, "content": { ... } }`.
+- `POST /api/workflow/start`: start `start|grow|relations|concept` orchestration and return its public checkpoint state.
+- `POST /api/workflow/resume`: resume a paused thread with a typed human decision.
+- `GET /api/workflow/:threadId`: reload paused/completed public state.
+- `GET /api/traces?requestId=...|threadId=...|projectId=...`: query non-prompt execution metadata.
 - Existing agent APIs remain: `POST /api/graph/diverge`, `POST /api/graph/grow`, `POST /api/graph/relations`, `POST /api/graph/concept`.
 
 ## Request Example
@@ -83,7 +87,7 @@ Failure:
 
 ## Revision Mechanism
 
-`POST /api/graph/commit` requires `expectedRevision`. If the server graph revision equals it, all operations are applied against a cloned snapshot and the revision increments by 1. If the server revision has moved, the API returns `409 GRAPH_REVISION_CONFLICT` with `expectedRevision`, `actualRevision` and the latest snapshot in `details`.
+`POST /api/graph/commit` requires `expectedRevision`. Optional `operationId` makes retries idempotent: an identical replay returns the first snapshot, while different content using the same id is rejected. If the server graph revision equals it, all operations are applied transactionally and the revision increments by 1. If the server revision has moved, the API returns `409 GRAPH_REVISION_CONFLICT` with `expectedRevision`, `actualRevision` and the latest snapshot in `details`.
 
 ## Graph Commit Operation
 
@@ -91,7 +95,7 @@ Core operations:
 
 - `ADOPT_NODE`, `EXCLUDE_NODE`, `RESTORE_NODE`
 - `UPDATE_NODE`
-- `DELETE_NODE`
+- `DELETE_NODE` with `cascade: false` (current only; children move to the deleted node's parent) or `cascade: true` (whole descendant branch)
 - `ADOPT_EDGE`, `EXCLUDE_EDGE`, `DELETE_EDGE`
 
 Mock integration extensions:
@@ -105,6 +109,7 @@ Example:
 {
   "projectId": "project_xxx",
   "expectedRevision": 0,
+  "operationId": "client-generated-stable-id",
   "operations": [
     {
       "type": "ADD_NODE",
@@ -120,12 +125,12 @@ Example:
 
 ## A/B/D Integration
 
-A implements `RetrievalProvider` from `lib/contracts/retrieval.ts`. Until then, use `MockRetrievalProvider`.
+A implements `RetrievalProvider` from `lib/contracts/retrieval.ts`. `HttpRetrievalProvider` is the production adapter selected by `RETRIEVAL_PROVIDER=real`; `MockRetrievalProvider` remains for tests.
 
 B implements `CreativeAgentGateway` from `lib/contracts/agent.ts`. The current `PipelineCreativeAgentGateway` adapts the existing pipelines without rewriting prompts.
 
-D should depend on these API responses and `tests/fixtures/*.json`. The existing localStorage demo remains intact for C0, but server graph APIs are now available for integration.
+D uses Project/Graph/Story APIs as the source of truth and Workflow start/resume for AI actions. localStorage contains only the current project/thread pointers and is never the formal graph store.
 
 ## Mock Usage
 
-Set `CREATIVE_MODEL_PROVIDER=mock` for offline agent routes. Repository data is memory-only and suitable for local tests or one Worker process.
+Set `CREATIVE_MODEL_PROVIDER=mock` for offline agent routes. Memory Repository/Checkpoint providers are local-test options; production refuses them and requires PostgreSQL.

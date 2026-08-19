@@ -13,6 +13,8 @@
     "test:unit": "tsx --test tests/*.unit.test.ts",
     "test:postgres": "tsx --test tests/postgres-project-repository.test.ts",
     "test:workflow:postgres": "tsx --test tests/workflow-postgres.test.ts",
+    "test:integration": "npm run test:postgres && npm run test:workflow:postgres",
+    "verify": "npm run lint && npm test && tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx db/migrate.ts"

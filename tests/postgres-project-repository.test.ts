@@ -11,7 +11,10 @@ const databaseUrl = process.env.POSTGRES_TEST_DATABASE_URL;
 
 test("postgres repository real transaction, conflict, cascade, and recovery", { skip: !databaseUrl }, async () => {
   assert.ok(databaseUrl);
-  const migration = await readFile(new URL("../db/migrations/0001_core_persistence.sql", import.meta.url), "utf8");
+  const migration = [
+    await readFile(new URL("../db/migrations/0001_core_persistence.sql", import.meta.url), "utf8"),
+    await readFile(new URL("../db/migrations/0002_observability_idempotency.sql", import.meta.url), "utf8"),
+  ].join("\n");
   const admin = postgres(databaseUrl, { max: 2, onnotice: () => undefined });
   await admin.begin((tx) => tx.unsafe(migration));
   const tables = await admin<{ table_name: string }[]>`
@@ -78,9 +81,50 @@ test("postgres repository real transaction, conflict, cascade, and recovery", { 
     }), (error: unknown) => error instanceof AppError && error.status === 400);
     assert.equal((await repository.getGraph(project.id))?.revision, beforeRollback.revision);
 
+    const beforeIdempotency = await repository.getGraph(project.id);
+    assert.ok(beforeIdempotency);
+    const idempotentRequest = {
+      projectId: project.id,
+      expectedRevision: beforeIdempotency.revision,
+      operationId: `idem-${crypto.randomUUID()}`,
+      operations: [{ type: "UPDATE_NODE" as const, nodeId: "pg-n1", patch: { importance: 4 } }],
+    };
+    const idempotentFirst = await repository.commitGraph(idempotentRequest);
+    const idempotentReplay = await repository.commitGraph(idempotentRequest);
+    assert.equal(idempotentReplay.revision, idempotentFirst.revision);
+    assert.equal(idempotentReplay.nodes.find((node) => node.id === "pg-n1")?.importance, 4);
+    assert.equal((await repository.getGraph(project.id))?.revision, idempotentFirst.revision);
+    await assert.rejects(repository.commitGraph({
+      ...idempotentRequest,
+      operations: [{ type: "UPDATE_NODE", nodeId: "pg-n1", patch: { importance: 5 } }],
+    }), (error: unknown) => error instanceof AppError && error.status === 409);
+
+    const hierarchy = await repository.commitGraph({
+      projectId: project.id,
+      expectedRevision: idempotentFirst.revision,
+      operations: [
+        { type: "ADD_NODE", node: { id: "tree-parent", label: "Parent" } },
+        { type: "ADD_NODE", node: { id: "tree-child", label: "Child", parentId: "tree-parent", depth: 2 } },
+        { type: "ADD_NODE", node: { id: "tree-grandchild", label: "Grandchild", parentId: "tree-child", depth: 3 } },
+      ],
+    });
+    const currentOnly = await repository.commitGraph({
+      projectId: project.id,
+      expectedRevision: hierarchy.revision,
+      operations: [{ type: "DELETE_NODE", nodeId: "tree-child", cascade: false }],
+    });
+    assert.equal(currentOnly.nodes.find((node) => node.id === "tree-grandchild")?.parentId, "tree-parent");
+    assert.equal(currentOnly.nodes.find((node) => node.id === "tree-grandchild")?.originalParentId, "tree-child");
+    const cascade = await repository.commitGraph({
+      projectId: project.id,
+      expectedRevision: currentOnly.revision,
+      operations: [{ type: "DELETE_NODE", nodeId: "tree-parent", cascade: true }],
+    });
+    assert.equal(cascade.nodes.some((node) => node.id.startsWith("tree-")), false);
+
     const stories = await Promise.all(["One", "Two", "Three"].map((title) => repository.saveStoryVersion({
       projectId: project.id,
-      graphRevision: beforeRollback.revision,
+      graphRevision: cascade.revision,
       content: { title },
     })));
     assert.deepEqual(stories.map((story) => story?.version).sort(), [1, 2, 3]);
@@ -88,7 +132,7 @@ test("postgres repository real transaction, conflict, cascade, and recovery", { 
     const rebuilt = new PostgresProjectRepository(databaseUrl, { max: 2 });
     try {
       assert.equal((await rebuilt.getProject(project.id))?.name, "Updated fixture");
-      assert.equal((await rebuilt.getGraph(project.id))?.revision, beforeRollback.revision);
+      assert.equal((await rebuilt.getGraph(project.id))?.revision, cascade.revision);
       assert.equal((await rebuilt.listStoryVersions(project.id))?.length, 3);
     } finally {
       await rebuilt.close();

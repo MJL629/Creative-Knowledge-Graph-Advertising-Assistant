@@ -2,6 +2,7 @@ import { getCreativeAgentGateway } from "../../../../lib/agents/creative-agent-g
 import { getRequestId, okJson, routeError } from "../../../../lib/api/response";
 import { ERROR_CODES, normalizeCreativeBrief } from "../../../../lib/contracts";
 import { getRuntimeEnv } from "../../../../lib/runtime/env";
+import { traceCall } from "../../../../lib/observability/trace";
 
 export async function POST(request: Request) {
   const requestId = getRequestId(request);
@@ -11,7 +12,8 @@ export async function POST(request: Request) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const body = normalizeCreativeBrief(await request.json());
-    const result = await getCreativeAgentGateway().initialDivergence(body, { requestId }, controller.signal);
+    const result = await traceCall("creative", "creative_divergence", { requestId }, () =>
+      getCreativeAgentGateway().initialDivergence(body, { requestId }, controller.signal));
     return okJson(result, {}, requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : "未知错误";

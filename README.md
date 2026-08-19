@@ -4,7 +4,7 @@
 
 系统使用 DeepSeek 的 OpenAI-compatible API，通过四个 Agent 将用户输入转成结构化创意知识图谱；用户可以采用、排除、继续生长节点并建立语义关系，最后从已采用子图收敛为剧情草案。
 
-> 支持 `mock` / `deepseek` 双模式：无 API Key 时设置 `CREATIVE_MODEL_PROVIDER=mock` 即可离线跑通完整演示。图谱状态自动存入 localStorage，刷新页面可恢复会话。
+> 支持 `mock` / `deepseek` 双模式。Project、Graph、Story 和暂停的 Workflow 由服务端 Repository/Checkpoint 持久化；localStorage 只保留当前项目 ID 指针。
 
 ## 在线演示
 
@@ -27,6 +27,9 @@
 - 节点拖拽与层级整理：自由拖动节点位置，一键按生成深度重新排列（FR-03 基础版）。
 - 节点字段：depth（生成深度）、originalParentId/originalDepth（变更溯源）、importance（重要性 1-5，PRD 7.1）。
 - mock 模式：不调用真实 API 即可离线跑通完整演示（PRD 9.1）。
+- PostgreSQL：事务提交、乐观 revision、幂等 operationId、两种删除和 Story 版本。
+- LangGraph：StateGraph、interrupt/resume 和 PostgreSQL durable checkpoint。
+- 可观测性：按 requestId/threadId/projectId 查询 Agent/Workflow Trace。
 
 ## 技术栈
 
@@ -117,9 +120,11 @@ prd-architecture-demo/
 │  ├─ mock-llm.ts                  # mock 适配器（离线演示，PRD 9.1）
 │  ├─ graph-pipeline.ts            # 首轮四 Agent + 关系推荐 + 剧情收敛
 │  └─ growth-pipeline.ts           # 生长四 Agent 流程
-├─ tests/
-│  └─ rendered-html.test.mjs       # 构建、路由接线、mock、会话恢复检查
-├─ db/、drizzle/、examples/        # Starter 保留的可选持久化示例，当前主流程未使用
+├─ lib/workflow/                   # LangGraph StateGraph、HITL、durable checkpoint
+├─ lib/repositories/               # Memory/PostgreSQL Repository
+├─ lib/retrieval/                  # Mock/HTTP RetrievalProvider
+├─ db/migrations/                  # 正式 PostgreSQL migrations
+├─ tests/                          # Unit、HTTP、Repository、Workflow 集成测试
 ├─ .env.example                    # 环境变量模板
 ├─ package.json
 └─ README.md
@@ -210,21 +215,12 @@ npm test
 
 ## 当前限制
 
-- 图谱编辑状态存 localStorage（单会话），没有服务端持久化数据库，换浏览器/清缓存会丢失。
-- “采用”“排除”“关系确认”目前只更新浏览器状态，没有服务端 Commit API（下一步：`POST /api/graph/commit` + `graphRevision` 乐观并发）。
+- 本地默认 `memory` 便于演示，进程重启后不会保留；正式环境强制 PostgreSQL。
 - 图谱布局采用固定分类槽位，节点非常多时仍需要 React Flow + 自动布局算法。
-- 剧情收敛已接入 Story Agent，但尚无版本化 Story 版本管理（story_versions）。
 - 没有账号级项目管理、多人协作、审计记录和限流。
 - mock 模式返回固定候选，仅用于流程演示，不代表真实模型质量。
 
-## 下一步建议
-
-1. 增加 `POST /api/graph/commit`，使用 `graphRevision` 做乐观并发控制。
-2. 使用 D1/PostgreSQL 保存 Brief、节点、关系、版本和 Agent Trace。
-3. 把“采用、排除、删除、关系确认”改为服务端确定性事务。
-4. 增加正式 Story Pipeline，只读取已采用子图。
-5. 增加 API 鉴权、调用限流、重试策略和模型用量记录。
-6. 增加生长 Pipeline 的单元测试、模型回归样例和 E2E 测试。
+完整的数据库、工作流、测试与生产配置见 [docs/SETUP.md](docs/SETUP.md)、[docs/DATABASE.md](docs/DATABASE.md) 和 [docs/WORKFLOW.md](docs/WORKFLOW.md)。
 
 ## 交接注意事项
 

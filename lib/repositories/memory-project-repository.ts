@@ -5,12 +5,14 @@ type Store = {
   projects: Map<string, Project>;
   graphs: Map<string, GraphSnapshot>;
   stories: Map<string, StoryVersion[]>;
+  commits: Map<string, { requestHash: string; snapshot: GraphSnapshot }>;
 };
 
 const store: Store = {
   projects: new Map(),
   graphs: new Map(),
   stories: new Map(),
+  commits: new Map(),
 };
 
 function nowIso() {
@@ -223,6 +225,7 @@ export class MemoryProjectRepository implements ProjectRepository {
     const existed = store.projects.delete(projectId);
     store.graphs.delete(projectId);
     store.stories.delete(projectId);
+    for (const key of store.commits.keys()) if (key.startsWith(`${projectId}:`)) store.commits.delete(key);
     return existed;
   }
 
@@ -236,6 +239,15 @@ export class MemoryProjectRepository implements ProjectRepository {
     if (!project) throw new AppError(ERROR_CODES.PROJECT_NOT_FOUND, "Project not found", 404);
     const current = store.graphs.get(input.projectId);
     if (!current) throw new AppError(ERROR_CODES.GRAPH_NOT_FOUND, "Graph not found", 404);
+    const requestHash = JSON.stringify({ expectedRevision: input.expectedRevision, operations: input.operations });
+    const idempotencyKey = input.operationId ? `${input.projectId}:${input.operationId}` : undefined;
+    const previous = idempotencyKey ? store.commits.get(idempotencyKey) : undefined;
+    if (previous) {
+      if (previous.requestHash !== requestHash) {
+        throw new AppError(ERROR_CODES.GRAPH_OPERATION_INVALID, "operationId was already used with a different request", 409);
+      }
+      return clone(previous.snapshot);
+    }
     if (!Number.isInteger(input.expectedRevision) || input.expectedRevision !== current.revision) {
       throw new AppError(ERROR_CODES.GRAPH_REVISION_CONFLICT, "Graph revision conflict", 409, {
         expectedRevision: input.expectedRevision,
@@ -255,6 +267,7 @@ export class MemoryProjectRepository implements ProjectRepository {
     next.edges = next.edges.map((edge) => ({ ...edge, projectId: input.projectId }));
     store.graphs.set(input.projectId, next);
     store.projects.set(input.projectId, { ...project, graphRevision: next.revision, updatedAt });
+    if (idempotencyKey) store.commits.set(idempotencyKey, { requestHash, snapshot: clone(next) });
     return clone(next);
   }
 

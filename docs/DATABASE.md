@@ -24,7 +24,7 @@ Schema changes live in `db/migrations` and never run implicitly at application s
 DATABASE_URL=postgres://... npm run db:migrate
 ```
 
-`0001_core_persistence.sql` is idempotent and creates the required primary keys, foreign keys, unique story-version guard, project indexes, and `ON DELETE CASCADE` relationships.
+Migrations run in filename order and are idempotent. `0001_core_persistence.sql` creates the business tables; `0002_observability_idempotency.sql` adds durable graph-commit idempotency records and best-effort execution traces. Reusing an `operationId` with the identical payload returns the original snapshot; different payload reuse is rejected.
 
 ## Verification
 
@@ -32,4 +32,4 @@ DATABASE_URL=postgres://... npm run db:migrate
 POSTGRES_TEST_DATABASE_URL=postgres://... npm run test:postgres
 ```
 
-The integration suite verifies CRUD, graph operations, revision conflicts, transaction rollback, unique story versions, project cascade deletion, and recovery after rebuilding the repository instance. Without `POSTGRES_TEST_DATABASE_URL`, the suite reports `SKIP`; it must not be reported as passing.
+The integration suite verifies CRUD, graph operations, revision conflicts, transaction rollback, idempotency, both node-delete modes, unique story versions, project cascade deletion, and recovery after rebuilding the repository instance. Without `POSTGRES_TEST_DATABASE_URL`, the suite reports `SKIP`; it must not be reported as passing.
