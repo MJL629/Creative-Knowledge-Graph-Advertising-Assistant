@@ -1,6 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ApiError,
+  commitGraph as apiCommitGraph,
+  createProject,
+  deleteProject as apiDeleteProject,
+  getGraphSnapshot,
+  getProject,
+  getWorkflowThread,
+  listProjects,
+  listStories,
+  resumeWorkflow as apiResumeWorkflow,
+  saveStory,
+  startWorkflow as apiStartWorkflow,
+  updateProject,
+  type GraphSnapshot,
+  type ProjectSummary,
+} from "../lib/client/api-client";
 
 type Status = "candidate" | "adopted" | "excluded" | "needs_review";
 type Category = "creative_element" | "motivation_conflict" | "story_event";
@@ -42,18 +59,6 @@ type StoryConcept = {
 type RelationCandidate = { label: string; direction: "forward" | "reverse" | "both"; rationale: string };
 type DivergenceCandidate = { category: Category; subtype?: string; title: string; description: string; attributes?: Record<string, string | string[]>; rationale: string };
 type GrowthCandidate = { clientKey: string; parentRef: string; category: Category; subtype?: string; title: string; description: string; attributes: Record<string, string | string[]>; rationale: string; actorRefs: string[]; productFeatureRefs: string[]; growthMode: GrowthMode; subjectContinuity: { status: string; score: number; note: string } };
-type ApiEnvelope<T> = { ok: boolean; result: T; error?: { code?: string; message?: string; details?: { snapshot?: GraphSnapshot } } };
-type GraphSnapshot = { projectId: string; revision: number; nodes: ServerNode[]; edges: ServerEdge[] };
-type ServerNode = Omit<Node, "x" | "y" | "provenance"> & {
-  projectId: string;
-  type: string;
-  label: string;
-  position?: { x: number; y: number };
-  provenance?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-type ServerEdge = Edge & { projectId: string; sourceId: string; targetId: string; createdAt: string; updatedAt: string };
 type GraphOperation =
   | { type: "ADD_NODE"; node: Record<string, unknown> }
   | { type: "ADD_EDGE"; edge: Record<string, unknown> }
@@ -61,24 +66,6 @@ type GraphOperation =
   | { type: "UPDATE_NODE"; nodeId: string; patch: Record<string, unknown> }
   | { type: "DELETE_NODE"; nodeId: string; cascade?: boolean }
   | { type: "ADOPT_EDGE" | "EXCLUDE_EDGE" | "DELETE_EDGE"; edgeId: string };
-type WorkflowState = {
-  projectId: string;
-  threadId: string;
-  intent: "start" | "grow" | "relations" | "concept";
-  graphRevision: number;
-  focusNodeId?: string;
-  sourceNodeId?: string;
-  targetNodeId?: string;
-  graphSnapshot?: GraphSnapshot;
-  candidateResult?: unknown;
-  next: string[];
-  interrupts: unknown[];
-  errors: string[];
-};
-
-async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
-  return response.json() as Promise<ApiEnvelope<T>>;
-}
 
 function splitList(value: string) {
   return value.split(/[；;、,，\n]/).map((item) => item.trim()).filter(Boolean);
@@ -93,13 +80,13 @@ function toUiGraph(snapshot: GraphSnapshot) {
       description: node.description ?? "",
       category: (node.category ?? node.type) as Category,
       subtype: node.subtype,
-      status: node.status,
+      status: node.status as Status,
       x: node.position?.x ?? 100,
       y: node.position?.y ?? 250,
       parentId: node.parentId ?? undefined,
       provenance: node.provenance ?? "Server persisted",
       attributes: node.attributes,
-      growthMode: node.growthMode,
+      growthMode: node.growthMode as GrowthMode | undefined,
       actorRefs: node.actorRefs,
       productFeatureRefs: node.productFeatureRefs,
       originalParentId: node.originalParentId ?? undefined,
@@ -114,7 +101,7 @@ function toUiGraph(snapshot: GraphSnapshot) {
       label: edge.label,
       type: edge.type ?? "semantic",
       direction: edge.direction,
-      status: edge.status,
+      status: edge.status as Edge["status"],
     })),
   };
 }
@@ -171,8 +158,29 @@ function statusLabel(status: Status) {
   return { candidate: "待选择", adopted: "已采用", excluded: "已排除", needs_review: "需复核" }[status];
 }
 
+function csvCell(value: string) {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function safeFileName(name: string) {
+  const cleaned = (name || "creative-story").replace(/[\\/:*?"<>|]/g, "_").trim();
+  return cleaned || "creative-story";
+}
+
+function downloadTextFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function Home() {
-  const [stage, setStage] = useState<"brief" | "graph" | "output">("brief");
+  const [stage, setStage] = useState<"projects" | "brief" | "graph" | "output">("projects");
   const [product, setProduct] = useState("疯狂水世界");
   const [knownInformation, setKnownInformation] = useState("小程序多人休闲游戏。玩家在水上乐园使用水枪对战，轻松、魔性、适合朋友组队。");
   const [ideas, setIdeas] = useState(["一位国王把超长水枪当作权杖", "输掉挑战的人会被缩小，装进透明水球"]);
@@ -227,6 +235,13 @@ export default function Home() {
   const [storyConcept, setStoryConcept] = useState<StoryConcept | null>(null);
   const [isConverging, setIsConverging] = useState(false);
   const [convergeError, setConvergeError] = useState("");
+  const [exportNotice, setExportNotice] = useState("");
+  const [projectList, setProjectList] = useState<ProjectSummary[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsError, setProjectsError] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // 节点拖拽（FR-03 自由布局基础版）
   const [dragState, setDragState] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
@@ -240,16 +255,12 @@ export default function Home() {
     if (!savedProjectId) return;
     void (async () => {
       try {
-        const [projectResponse, graphResponse, storyResponse] = await Promise.all([
-          fetch(`/api/projects/${savedProjectId}`),
-          fetch(`/api/projects/${savedProjectId}/graph`),
-          fetch(`/api/projects/${savedProjectId}/stories`),
+        const [projectPayload, graphPayload, storyPayload] = await Promise.all([
+          getProject(savedProjectId),
+          getGraphSnapshot(savedProjectId),
+          listStories(savedProjectId),
         ]);
-        const projectPayload = await readApiEnvelope<{ name: string; brief: Record<string, unknown> }>(projectResponse);
-        const graphPayload = await readApiEnvelope<GraphSnapshot>(graphResponse);
-        const storyPayload = await readApiEnvelope<Array<{ content: StoryConcept }>>(storyResponse);
-        if (!projectResponse.ok || !graphResponse.ok || !projectPayload.ok || !graphPayload.ok) throw new Error("项目不存在");
-        const brief = projectPayload.result.brief;
+        const brief = projectPayload.brief as unknown as Record<string, unknown>;
         setProjectId(savedProjectId);
         setProduct(String(brief.product ?? ""));
         setKnownInformation(String(brief.knownInformation ?? ""));
@@ -262,21 +273,20 @@ export default function Home() {
         setStyles(Array.isArray(brief.styles) ? brief.styles.join("、") : "");
         setHotMemes(Array.isArray(brief.hotMemes) ? brief.hotMemes.join("、") : "");
         setSellingPoints(Array.isArray(brief.sellingPoints) ? brief.sellingPoints.join("、") : "");
-        const graph = toUiGraph(graphPayload.result);
+        const graph = toUiGraph(graphPayload);
         setNodes(graph.nodes);
         setEdges(graph.edges);
         setRevision(graph.revision);
-        const latestStory = storyPayload.ok ? storyPayload.result.at(-1)?.content : undefined;
+        const latestStory = storyPayload.at(-1)?.content as StoryConcept | undefined;
         if (latestStory) setStoryConcept(latestStory);
         setStage(latestStory ? "output" : graph.nodes.length ? "graph" : "brief");
         setRequest("已从服务端恢复项目");
         const savedThreadId = localStorage.getItem(THREAD_KEY);
         if (savedThreadId) {
-          const workflowResponse = await fetch(`/api/workflow/${savedThreadId}`);
-          const workflowPayload = await readApiEnvelope<WorkflowState>(workflowResponse);
-          if (workflowResponse.ok && workflowPayload.ok && workflowPayload.result.next.length) {
+          const workflowState = await getWorkflowThread(savedThreadId);
+          if (workflowState.next.length) {
             setWorkflowThreadId(savedThreadId);
-            const state = workflowPayload.result;
+            const state = workflowState;
             if (state.intent === "start") {
               const result = state.candidateResult as { candidates?: DivergenceCandidate[] };
               const counters: Record<Category, number> = { creative_element: 0, motivation_conflict: 0, story_event: 0 };
@@ -343,6 +353,75 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (stage === "projects") void loadProjects();
+  }, [stage]);
+
+  async function loadProjects() {
+    setProjectsLoading(true);
+    setProjectsError("");
+    try {
+      setProjectList(await listProjects());
+    } catch (error) {
+      setProjectsError(error instanceof Error ? error.message : "项目列表加载失败");
+    } finally {
+      setProjectsLoading(false);
+    }
+  }
+
+  function beginNewProject() {
+    setProjectId(null);
+    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(THREAD_KEY);
+    setWorkflowThreadId(null);
+    setNodes([]);
+    setEdges([]);
+    setRevision(0);
+    setStoryConcept(null);
+    setStage("brief");
+  }
+
+  function openProjectFromList(targetProjectId: string) {
+    localStorage.setItem(SESSION_KEY, targetProjectId);
+    setProjectId(targetProjectId);
+    window.location.reload();
+  }
+
+  function startRename(targetProjectId: string, currentName: string) {
+    setRenamingId(targetProjectId);
+    setRenameDraft(currentName);
+  }
+
+  async function saveRename() {
+    if (!renamingId || !renameDraft.trim()) return;
+    try {
+      const updated = await updateProject(renamingId, { name: renameDraft.trim() });
+      setProjectList((current) => current.map((item) => item.id === updated.id ? { ...item, name: updated.name, updatedAt: updated.updatedAt } : item));
+      setRenamingId(null);
+      setRenameDraft("");
+    } catch (error) {
+      setProjectsError(error instanceof Error ? error.message : "重命名失败");
+    }
+  }
+
+  async function removeProjectFromList(targetProjectId: string) {
+    if (deletingId) return;
+    setDeletingId(targetProjectId);
+    try {
+      await apiDeleteProject(targetProjectId);
+      setProjectList((current) => current.filter((item) => item.id !== targetProjectId));
+      if (targetProjectId === projectId) {
+        setProjectId(null);
+        localStorage.removeItem(SESSION_KEY);
+        localStorage.removeItem(THREAD_KEY);
+      }
+    } catch (error) {
+      setProjectsError(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  useEffect(() => {
     function cancelRelation(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setRelationSource(null);
@@ -387,6 +466,80 @@ export default function Home() {
     ];
   }, [adopted, product]);
 
+  function storyExportData() {
+    const concept = storyConcept;
+    const beats = concept?.beats?.length ? concept.beats : story;
+    return {
+      concept: concept?.concept || "每个人都有十秒钟，成为水世界国王。",
+      theme: concept?.theme || "规则即乐趣：谁都能挑战王座",
+      perspective: concept?.perspective || "第三人称轻喜剧",
+      coreConflict: concept?.core_conflict || "现任国王抵挡全场挑战者",
+      mainLine: concept?.main_line || "从被低估到逆转，完成水世界王位传承。",
+      beats,
+      sellingPoint: concept?.selling_point_insertion || "水枪玩法即剧情机制",
+      twist: concept?.twist || "透明王冠最后一秒换人",
+      cta: concept?.cta || `来${product}，下一任水世界国王可能就是你。`,
+      shooting: concept?.shooting_feasibility || "",
+    };
+  }
+
+  function storyMarkdown() {
+    const data = storyExportData();
+    const lines = [
+      `# ${product} · 30 秒广告剧情方案`,
+      "",
+      `- 一句话创意：${data.concept}`,
+      `- 核心主题：${data.theme}`,
+      `- 叙事视角：${data.perspective}`,
+      `- 核心冲突：${data.coreConflict}`,
+      `- 故事主线：${data.mainLine}`,
+      "",
+      "## 分镜表",
+      "",
+    ];
+    data.beats.forEach((beat, index) => {
+      const refs = beat.refs.length ? beat.refs.map((ref) => nodes.find((node) => node.id === ref)?.title || ref).join("、") : "Brief 约束";
+      lines.push(`${String(index + 1).padStart(2, "0")}. **${beat.phase}**  ${beat.text}`);
+      lines.push(`   依据：${refs}`);
+      lines.push("");
+    });
+    lines.push("## 产品与执行", "");
+    lines.push(`- 卖点植入：${data.sellingPoint}`);
+    lines.push(`- 反转 / 记忆点：${data.twist}`);
+    lines.push(`- CTA：${data.cta}`);
+    if (data.shooting) lines.push(`- 拍摄可行性：${data.shooting}`);
+    lines.push("");
+    lines.push(`> 图谱依据：revision ${revision} · 已采用 ${adopted.length} 个节点 · 已采用关系 ${adoptedEdges.length} 条`);
+    return lines.join("\n");
+  }
+
+  function exportStoryMarkdown() {
+    downloadTextFile(`${safeFileName(product)}-剧情方案.md`, storyMarkdown(), "text/markdown;charset=utf-8");
+  }
+
+  function exportStoryCsv() {
+    const data = storyExportData();
+    const header = ["镜头号", "节拍", "画面 / 台词", "图谱依据"];
+    const rows = data.beats.map((beat, index) => [
+      String(index + 1),
+      beat.phase,
+      beat.text,
+      beat.refs.length ? beat.refs.map((ref) => nodes.find((node) => node.id === ref)?.title || ref).join("、") : "Brief 约束",
+    ]);
+    const csv = "\ufeff" + [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+    downloadTextFile(`${safeFileName(product)}-分镜表.csv`, csv, "text/csv;charset=utf-8");
+  }
+
+  async function copyStoryText() {
+    try {
+      await navigator.clipboard.writeText(storyMarkdown());
+      setExportNotice("已复制全文");
+    } catch {
+      setExportNotice("复制失败，请手动选择");
+    }
+    window.setTimeout(() => setExportNotice(""), 2000);
+  }
+
   function currentBrief() {
     return {
       product,
@@ -413,47 +566,37 @@ export default function Home() {
   async function ensureProject() {
     const brief = currentBrief();
     if (projectId) {
-      const response = await fetch(`/api/projects/${projectId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: product, brief }),
-      });
-      const payload = await readApiEnvelope<{ id: string }>(response);
-      if (response.ok && payload.ok) return projectId;
-      if (response.status !== 404) throw new Error(payload.error?.message || "项目更新失败");
+      try {
+        await updateProject(projectId, { name: product, brief });
+        return projectId;
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      }
     }
-    const response = await fetch("/api/projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: product, brief }),
-    });
-    const payload = await readApiEnvelope<{ id: string }>(response);
-    if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "项目创建失败");
-    setProjectId(payload.result.id);
-    localStorage.setItem(SESSION_KEY, payload.result.id);
+    const created = await createProject({ name: product, brief });
+    setProjectId(created.id);
+    localStorage.setItem(SESSION_KEY, created.id);
     setRevision(0);
-    return payload.result.id;
+    return created.id;
   }
 
   async function commitOperations(operations: GraphOperation[], targetProjectId = projectId) {
     if (!targetProjectId) throw new Error("请先创建项目");
-    const response = await fetch("/api/graph/commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const snapshot = await apiCommitGraph({
         projectId: targetProjectId,
         expectedRevision: revision,
         operationId: await operationIdFor(revision, operations),
         operations,
-      }),
-    });
-    const payload = await readApiEnvelope<GraphSnapshot>(response);
-    if (!response.ok || !payload.ok) {
-      if (response.status === 409 && payload.error?.details?.snapshot) applyServerGraph(payload.error.details.snapshot);
-      throw new Error(payload.error?.message || "图谱提交失败");
+      });
+      applyServerGraph(snapshot);
+      return snapshot;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && error.details?.snapshot) {
+        applyServerGraph(error.details.snapshot as GraphSnapshot);
+      }
+      throw error;
     }
-    applyServerGraph(payload.result);
-    return payload.result;
   }
 
   async function operationIdFor(expectedRevision: number, operations: GraphOperation[]) {
@@ -464,40 +607,35 @@ export default function Home() {
 
   async function startWorkflow(input: Record<string, unknown>) {
     if (!projectId && !input.projectId) throw new Error("请先创建项目");
-    const response = await fetch("/api/workflow/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: input.projectId ?? projectId, ...input }),
-    });
-    const payload = await readApiEnvelope<WorkflowState>(response);
-    if (!response.ok || !payload.ok) throw new Error(payload.error?.message || "Workflow 启动失败");
-    if (payload.result.next.length) {
-      setWorkflowThreadId(payload.result.threadId);
-      localStorage.setItem(THREAD_KEY, payload.result.threadId);
+    const result = await apiStartWorkflow({ projectId: input.projectId ?? projectId, ...input });
+    if (result.next.length) {
+      setWorkflowThreadId(result.threadId);
+      localStorage.setItem(THREAD_KEY, result.threadId);
     } else {
       setWorkflowThreadId(null);
       localStorage.removeItem(THREAD_KEY);
     }
-    return payload.result;
+    return result;
   }
 
   async function resumeWorkflow(operations: GraphOperation[]) {
     if (!workflowThreadId) throw new Error("没有可恢复的 Workflow");
-    const response = await fetch("/api/workflow/resume", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threadId: workflowThreadId, decision: { action: "commit", operations } }),
-    });
-    const payload = await readApiEnvelope<WorkflowState>(response);
-    if (!response.ok || !payload.ok) {
-      if (response.status === 409 && payload.error?.details?.snapshot) applyServerGraph(payload.error.details.snapshot);
-      throw new Error(payload.error?.message || "Workflow 恢复失败");
+    try {
+      const result = await apiResumeWorkflow({
+        threadId: workflowThreadId,
+        decision: { action: "commit", operations },
+      });
+      if (result.graphSnapshot) applyServerGraph(result.graphSnapshot);
+      setWorkflowThreadId(null);
+      setPendingCandidateIds(new Set());
+      localStorage.removeItem(THREAD_KEY);
+      return result;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && error.details?.snapshot) {
+        applyServerGraph(error.details.snapshot as GraphSnapshot);
+      }
+      throw error;
     }
-    if (payload.result.graphSnapshot) applyServerGraph(payload.result.graphSnapshot);
-    setWorkflowThreadId(null);
-    setPendingCandidateIds(new Set());
-    localStorage.removeItem(THREAD_KEY);
-    return payload.result;
   }
 
   async function runInitialGeneration() {
@@ -902,14 +1040,8 @@ export default function Home() {
       if (!concept?.concept) throw new Error("Workflow 未返回剧情");
       setStoryConcept(concept);
       if (!projectId) throw new Error("项目不存在");
-      const saveResponse = await fetch(`/api/projects/${projectId}/stories`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ graphRevision: workflow.graphRevision, content: concept }),
-      });
-      const savePayload = await readApiEnvelope<{ version: number }>(saveResponse);
-      if (!saveResponse.ok || !savePayload.ok) throw new Error(savePayload.error?.message || "剧情版本保存失败");
-      setTraceId(`story-v${savePayload.result.version}`);
+      const saved = await saveStory(projectId, { graphRevision: workflow.graphRevision, content: concept });
+      setTraceId(`story-v${saved.version}`);
       setRequest("graph.concept.v1 · 引用校验通过");
       setStage("output");
     } catch (error) {
@@ -925,12 +1057,45 @@ export default function Home() {
       <header className="topbar">
         <div className="brand"><span className="brand-mark">织</span><div><strong>创意织图</strong><small>Creative Graph Lab</small></div></div>
         <div className="steps">
-          {[["brief", "01", "输入 Brief"], ["graph", "02", "构建图谱"], ["output", "03", "剧情输出"]].map(([key, num, label]) => (
-            <button key={key} className={stage === key ? "step active" : "step"} onClick={() => setStage(key as typeof stage)}><b>{num}</b>{label}</button>
+          {[["projects", "00", "项目库"], ["brief", "01", "输入 Brief"], ["graph", "02", "构建图谱"], ["output", "03", "剧情输出"]].map(([key, num, label]) => (
+            <button key={key} className={stage === key ? "step active" : "step"} onClick={() => { setStage(key as typeof stage); if (key === "projects") void loadProjects(); }}><b>{num}</b>{label}</button>
           ))}
         </div>
         <div className="system-pill"><span /> DeepSeek · 4 Agents · rev {revision}</div>
       </header>
+
+      {stage === "projects" && <section className="brief-page">
+        <div className="hero-copy">
+          <p className="eyebrow">PROJECT LIBRARY</p>
+          <h1>从项目库开始，<br/><em>继续你的创意</em></h1>
+          <p className="lead">打开已有项目继续创作，或新建一个项目开始新的创意发散。图谱和剧情都由服务端保存。</p>
+          <div className="principles"><span>{projectList.length} 个项目</span><span>服务端持久化</span><span>可追溯创作</span></div>
+        </div>
+        <div className="brief-card">
+          <div className="card-heading"><div><small>PROJECTS</small><h2>项目库</h2></div><button type="button" className="add-idea" onClick={beginNewProject}>＋ 新建项目</button></div>
+          {projectsError && <p className="generation-error">{projectsError}</p>}
+          {projectsLoading && <p className="microcopy">正在加载项目…</p>}
+          {!projectsLoading && !projectList.length && <p className="microcopy">还没有项目，点击右上角“新建项目”开始第一次创作。</p>}
+          {projectList.map((item) => (
+            <div key={item.id} style={{ borderBottom: "1px solid var(--line)", padding: "16px 0", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <div>
+                {renamingId === item.id ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <input value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} style={{ width: 220 }} />
+                    <button className="secondary" onClick={saveRename}>保存</button>
+                    <button className="secondary" onClick={() => setRenamingId(null)}>取消</button>
+                  </div>
+                ) : <><strong>{item.name || "未命名项目"}</strong><small style={{ display: "block", color: "var(--muted)", marginTop: 4 }}>revision {item.graphRevision} · 更新于 {new Date(item.updatedAt).toLocaleString()}</small></>}
+              </div>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
+                <button className="secondary" onClick={() => openProjectFromList(item.id)}>打开</button>
+                <button className="secondary" onClick={() => startRename(item.id, item.name)}>重命名</button>
+                <button className="secondary" disabled={deletingId === item.id} onClick={() => removeProjectFromList(item.id)}>{deletingId === item.id ? "删除中…" : "删除"}</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>}
 
       {stage === "brief" && <section className="brief-page">
         <div className="hero-copy">
@@ -1132,7 +1297,7 @@ export default function Home() {
       </section>}
 
       {stage === "output" && <section className="output-page">
-        <div className="output-intro"><p className="eyebrow">TRACEABLE STORY OUTPUT</p><h1>每一个剧情节拍，<br/>都有图谱依据。</h1><p>系统只读取已采用子图；未采用和已排除节点不会进入最终生成上下文。</p><button className="secondary" onClick={() => setStage("graph")}>← 返回图谱调整</button></div>
+        <div className="output-intro"><p className="eyebrow">TRACEABLE STORY OUTPUT</p><h1>每一个剧情节拍，<br/>都有图谱依据。</h1><p>系统只读取已采用子图；未采用和已排除节点不会进入最终生成上下文。</p><div className="head-actions output-actions" style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 18 }}><button className="secondary" onClick={exportStoryMarkdown}>导出 Markdown</button><button className="secondary" onClick={exportStoryCsv}>导出分镜 CSV</button><button className="secondary" onClick={copyStoryText}>{exportNotice || "复制全文"}</button><button className="secondary" onClick={() => setStage("graph")}>← 返回图谱调整</button></div></div>
         {convergeError && <p className="generation-error">{convergeError}</p>}
         <div className="story-card">
           <div className="story-head"><div><small>ONE-LINE CONCEPT</small><h2>{storyConcept?.concept || "每个人都有十秒钟，成为水世界国王。"}</h2></div><span>{traceId || "story-draft"}</span></div>
