@@ -64,6 +64,36 @@ test("AI 服务返回 500 时显示错误提示而不是白屏", async ({ page }
   await expect(page.locator("main")).toBeVisible();
 });
 
+test("409 冲突时应用最新图谱并显示提示而不是白屏", async ({ page }) => {
+  await startFromBrief(page, "冲突测试产品", "冲突想法");
+
+  await page.route("**/api/workflow/resume", (route) => route.fulfill({
+    status: 409,
+    contentType: "application/json",
+    body: JSON.stringify({
+      ok: false,
+      error: {
+        code: "GRAPH_REVISION_CONFLICT",
+        message: "数据已更新，请重新加载",
+        details: {
+          snapshot: {
+            projectId: "project-conflict",
+            revision: 99,
+            nodes: [],
+            edges: [],
+          },
+        },
+      },
+    }),
+  }));
+
+  await page.locator(".graph-node").first().click();
+  await page.getByRole("button", { name: "✓ 采用" }).click();
+  await expect(page.locator(".architecture-panel")).toContainText("数据已更新", { timeout: 30_000 });
+  await expect(page.locator(".architecture-panel")).toContainText("graphRevision 99");
+  await expect(page.locator("main")).toBeVisible();
+});
+
 test("AI 网络失败时页面不白屏且允许重试", async ({ page }) => {
   await page.route("**/api/workflow/start", (route) => route.abort("failed"));
 
