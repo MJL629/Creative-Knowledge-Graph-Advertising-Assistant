@@ -52,21 +52,17 @@ test("server renders the creative graph application", async () => {
 });
 
 test("initial and growth routes are wired to their agent pipelines", async () => {
-  const [initialRoute, growthRoute, page, growthPipeline, client] = await Promise.all([
+  const [initialRoute, growthRoute, page, growthPipeline] = await Promise.all([
     readFile(new URL("../app/api/graph/diverge/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/graph/grow/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/agents/growth-pipeline.ts", import.meta.url), "utf8"),
-    readFile(new URL("../lib/client/api-client.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(initialRoute, /getCreativeAgentGateway/);
   assert.match(growthRoute, /getCreativeAgentGateway/);
-  assert.match(client, /\/api\/workflow\/start/);
-  assert.match(client, /\/api\/workflow\/resume/);
-  assert.match(page, /startWorkflow as apiStartWorkflow/);
-  assert.match(page, /resumeWorkflow as apiResumeWorkflow/);
-  assert.doesNotMatch(page, /fetch\(/);
+  assert.match(page, /fetch\("\/api\/workflow\/start"/);
+  assert.match(page, /fetch\("\/api\/workflow\/resume"/);
   assert.match(growthPipeline, /supervisorAgent/);
   assert.match(growthPipeline, /creativeAgent/);
   assert.match(growthPipeline, /criticAgent/);
@@ -102,14 +98,11 @@ test("mock provider exists and is routed (PRD 9.1 离线演示)", async () => {
 });
 
 test("session persistence is wired (FR-11)", async () => {
-  const [page, client] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../lib/client/api-client.ts", import.meta.url), "utf8"),
-  ]);
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /localStorage\.getItem/);
   assert.match(page, /localStorage\.setItem/);
-  assert.match(client, /\/api\/projects/);
-  assert.match(client, /\/api\/graph\/commit/);
+  assert.match(page, /\/api\/projects/);
+  assert.match(page, /\/api\/graph\/commit/);
   assert.doesNotMatch(page, /localStorage\.setItem\(SESSION_KEY, JSON\.stringify/);
   // 两种删除（FR-09）与节点编辑（FR-04）存在
   assert.match(page, /deleteNodeOnly/);
