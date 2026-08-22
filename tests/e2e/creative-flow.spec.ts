@@ -33,7 +33,8 @@ test("mock 完整闭环：Brief → 图谱 → 采用 → 生长 → 剧情 → 
   await expect(page.locator(".graph-stats")).toContainText("1 已采用");
 
   await page.locator(".graph-node.adopted").first().click();
-  await page.getByRole("button", { name: "＋ 继续生长" }).first().click();
+  await page.locator(".detail-panel").getByRole("button", { name: "＋ 继续生长" }).click();
+  await expect(page.getByRole("button", { name: "生成候选 →" })).toBeVisible();
   await page.getByRole("button", { name: "生成候选 →" }).click();
   await expect(page.locator(".graph-node")).toHaveCount(8, { timeout: 30_000 });
 
@@ -53,8 +54,13 @@ test("AI 服务返回 500 时显示错误提示而不是白屏", async ({ page }
     body: JSON.stringify({ ok: false, error: { code: "INTERNAL_ERROR", message: "模拟服务器错误" } }),
   }));
 
-  await startFromBrief(page, "错误测试产品", "一个碎片想法");
-  await expect(page.locator(".generation-error")).toContainText("模拟服务器错误");
+  await page.goto("/");
+  await waitForReact(page);
+  await page.getByRole("button", { name: "＋ 新建项目" }).click();
+  await page.locator("label:has-text('推广对象') input").fill("错误测试产品");
+  await page.locator(".idea-field input").first().fill("一个碎片想法");
+  await page.getByRole("button", { name: /生成首轮创意图谱/ }).click();
+  await expect(page.locator(".generation-error")).toContainText("模拟服务器错误", { timeout: 30_000 });
   await expect(page.locator("main")).toBeVisible();
 });
 
