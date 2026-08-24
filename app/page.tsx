@@ -951,6 +951,7 @@ export default function Home() {
     setRelationError("");
     setRelationCandidates([]);
     try {
+      await commitPendingCandidatesIfNeeded();
       const sourceNode = nodes.find((n) => n.id === sourceId);
       const targetNode = nodes.find((n) => n.id === targetId);
       if (!sourceNode || !targetNode) throw new Error("端点节点不存在");
@@ -975,6 +976,15 @@ export default function Home() {
     } finally {
       setIsLoadingRelations(false);
     }
+  }
+
+  async function commitPendingCandidatesIfNeeded() {
+    const pending = nodes.filter((node) => pendingCandidateIds.has(node.id));
+    if (!pending.length) return;
+    const operations = pending.map((node) => addNodeOperation(node));
+    if (workflowThreadId) await resumeWorkflow(operations);
+    else await commitOperations(operations);
+    setPendingCandidateIds(new Set());
   }
 
   function startRelation(node: Node) {

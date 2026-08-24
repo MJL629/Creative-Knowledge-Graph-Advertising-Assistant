@@ -47,6 +47,19 @@ test("mock 完整闭环：Brief → 图谱 → 采用 → 生长 → 剧情 → 
   await expect(page.getByText("TRACEABLE STORY OUTPUT")).toBeVisible({ timeout: 30_000 });
 });
 
+test("首轮生成后可直接建立语义关系，不报 Node not found", async ({ page }) => {
+  await startFromBrief(page, "连线测试产品", "连线想法");
+
+  const first = page.locator(".graph-node").nth(0);
+  const second = page.locator(".graph-node").nth(1);
+  await first.click();
+  await first.locator(".connector-dot").click();
+  await second.click();
+  await expect(page.locator(".relation-editor")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "确认关系" }).click();
+  await expect(page.locator(".graph-stats")).toContainText("1 语义关系", { timeout: 30_000 });
+});
+
 test("AI 服务返回 500 时显示错误提示而不是白屏", async ({ page }) => {
   await page.route("**/api/workflow/start", (route) => route.fulfill({
     status: 500,
