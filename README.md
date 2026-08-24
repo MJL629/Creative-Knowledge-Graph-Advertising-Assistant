@@ -222,6 +222,10 @@ npm test
 
 完整的数据库、工作流、测试与生产配置见 [docs/SETUP.md](docs/SETUP.md)、[docs/DATABASE.md](docs/DATABASE.md) 和 [docs/WORKFLOW.md](docs/WORKFLOW.md)。
 
+## Python 多 Agent 首轮与生长工作流
+
+`python_agents/` 提供一套独立的 LangGraph Python 实现，用统一完整 `SharedState` 串联首轮 Supervisor、多视角分析、Creative、Validator、Critic，以及六方向节点生长和 Repair Loop。首轮六个候选与生长候选使用隔离的 State 区域和 ID 命名空间；该实现严格禁止节点原地修改 State 或只返回局部补丁，详情见 [python_agents/README.md](python_agents/README.md)。
+
 ## 交接注意事项
 
 - 不要共享当前 `.env`，每位同学使用自己的 API Key。

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "creative-graph-multi-agent"
+version = "0.1.0"
+description = "Immutable shared-state LangGraph workflows for creative divergence, graph growth, and Story convergence"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph==1.2.10",
+]
+
+[project.scripts]
+creative-graph-agents = "creative_graph_agents.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.unittest]
+start-directory = "tests"
