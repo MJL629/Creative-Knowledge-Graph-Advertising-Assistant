@@ -12,6 +12,7 @@ import {
   listProjects,
   listStories,
   resumeWorkflow as apiResumeWorkflow,
+  reviseStory,
   saveStory,
   startWorkflow as apiStartWorkflow,
   updateProject,
@@ -242,6 +243,14 @@ export default function Home() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [edgeMode, setEdgeMode] = useState<"all" | "hierarchy" | "semantic">("all");
+  const [selectedGrowIds, setSelectedGrowIds] = useState<string[]>([]);
+  const [adoptingAll, setAdoptingAll] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiDiff, setAiDiff] = useState<{ before: unknown; after: unknown; changes: unknown[] } | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
 
   // 节点拖拽（FR-03 自由布局基础版）
   const [dragState, setDragState] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
@@ -454,6 +463,16 @@ export default function Home() {
 
   const readiness = Math.min(100, adopted.length * 14 + adoptedEdges.length * 12 + (adopted.some((n) => n.category === "story_event") ? 18 : 0));
 
+  const visibleNodes = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    if (!keyword) return nodes;
+    return nodes.filter((node) => `${node.title} ${node.description} ${node.subtype || ""}`.toLowerCase().includes(keyword));
+  }, [nodes, searchText]);
+
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const visibleHierarchyEdges = nodes.filter((node) => node.parentId && visibleNodeIds.has(node.id) && visibleNodeIds.has(node.parentId));
+  const visibleSemanticEdges = edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
+
   const story = useMemo(() => {
     const names = adopted.map((node) => node.title);
     const sourceIds = adopted.map((node) => node.id);
@@ -538,6 +557,43 @@ export default function Home() {
       setExportNotice("复制失败，请手动选择");
     }
     window.setTimeout(() => setExportNotice(""), 2000);
+  }
+
+  function updateStoryField<K extends keyof StoryConcept>(field: K, value: StoryConcept[K]) {
+    setStoryConcept((current) => current ? { ...current, [field]: value } : current);
+  }
+
+  function updateBeat(index: number, patch: Partial<StoryConcept["beats"][number]>) {
+    setStoryConcept((current) => current ? { ...current, beats: current.beats.map((beat, beatIndex) => beatIndex === index ? { ...beat, ...patch } : beat) } : current);
+  }
+
+  async function saveStoryVersion() {
+    if (!projectId || !storyConcept) return;
+    try {
+      const saved = await saveStory(projectId, { graphRevision: revision, content: storyConcept });
+      setExportNotice(`已保存为版本 ${saved.version}`);
+    } catch (error) {
+      setExportNotice(error instanceof Error ? `保存失败：${error.message}` : "保存失败");
+    }
+  }
+
+  async function generateAiDiff() {
+    if (!storyConcept || !aiPrompt.trim() || aiLoading) return;
+    setAiLoading(true);
+    setAiError("");
+    try {
+      const diff = await reviseStory({
+        story: storyConcept,
+        instruction: aiPrompt.trim(),
+        adoptedNodes: adopted,
+        adoptedEdges,
+      });
+      setAiDiff(diff);
+    } catch {
+      setAiError("AI 微调服务尚未接入：技术同学按 docs/STORY_REVISE_CONTRACT.md 实现 /api/story/revise 后即可使用。");
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   function currentBrief() {
@@ -987,6 +1043,70 @@ export default function Home() {
     setPendingCandidateIds(new Set());
   }
 
+  async function adoptAllNodes() {
+    const targets = nodes.filter((node) => node.status === "candidate");
+    if (!targets.length || adoptingAll) return;
+    setAdoptingAll(true);
+    try {
+      if (workflowThreadId && pendingCandidateIds.size) {
+        const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
+        const operations = pendingNodes.map((node) => addNodeOperation(node, targets.some((target) => target.id === node.id) ? "adopted" : node.status));
+        await resumeWorkflow(operations);
+        setPendingCandidateIds(new Set());
+      } else {
+        await commitOperations(targets.map((node) => ({ type: "ADOPT_NODE", nodeId: node.id })));
+      }
+      setRequest(`domain.adoptAll · 已采用 ${targets.length} 个节点`);
+    } catch (error) {
+      setRequest(`全部采用失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    } finally {
+      setAdoptingAll(false);
+    }
+  }
+
+  function toggleGrowSelection(nodeId: string) {
+    setSelectedGrowIds((current) => current.includes(nodeId) ? current.filter((id) => id !== nodeId) : [...current, nodeId]);
+  }
+
+  async function growSelectedNodes() {
+    const targets = nodes.filter((node) => selectedGrowIds.includes(node.id));
+    if (!targets.length || isGrowing) return;
+    setIsGrowing(true);
+    setGrowthError("");
+    try {
+      for (const target of targets) {
+        await executeGrowth(target);
+      }
+      setSelectedGrowIds([]);
+      setRequest(`批量生长完成 · ${targets.length} 个节点 · 每个生成 ${growthCount} 个候选`);
+    } catch (error) {
+      setGrowthError(error instanceof Error ? error.message : "批量生长失败");
+    } finally {
+      setIsGrowing(false);
+    }
+  }
+
+  async function refreshRelationCandidates() {
+    const edge = edges.find((item) => item.id === editingEdgeId);
+    if (!edge || isLoadingRelations) return;
+    const sourceNode = nodes.find((node) => node.id === edge.source);
+    const targetNode = nodes.find((node) => node.id === edge.target);
+    if (!sourceNode || !targetNode) return;
+    setIsLoadingRelations(true);
+    setRelationError("");
+    try {
+      const workflow = await startWorkflow({ intent: "relations", sourceNodeId: edge.source, targetNodeId: edge.target, needRag: false });
+      const result = workflow.candidateResult as { relations?: RelationCandidate[] };
+      const candidates = result?.relations || [];
+      setRelationCandidates(candidates);
+      if (candidates.length) setDraftRelation({ label: candidates[0].label, direction: candidates[0].direction });
+    } catch (error) {
+      setRelationError(error instanceof Error ? `换一批失败（可手动输入）：${error.message}` : "换一批失败，可手动输入");
+    } finally {
+      setIsLoadingRelations(false);
+    }
+  }
+
   function startRelation(node: Node) {
     setRelationSource(node.id);
     setEditingEdgeId(null);
@@ -1148,8 +1268,19 @@ export default function Home() {
           <div className="graph-stats"><span><b>{nodes.length}</b> 节点</span><span><b>{adopted.length}</b> 已采用</span><span><b>{nodes.filter((n) => n.status === "needs_review").length}</b> 需复核</span><span><b>{edges.length}</b> 语义关系</span><span className="ready"><i style={{width: `${readiness}%`}}/>准备度 {readiness}%</span></div>
           <div className="head-actions">
             <button className="secondary compact" onClick={autoLayout}>⇅ 按层级整理</button>
+            <button className="secondary compact" disabled={adoptingAll || !nodes.some((node) => node.status === "candidate")} onClick={() => void adoptAllNodes()}>{adoptingAll ? "采用中…" : "全部采用"}</button>
+            <button className="secondary compact" disabled={!selectedGrowIds.length || isGrowing} onClick={() => void growSelectedNodes()}>选择节点生长（{selectedGrowIds.length}）</button>
             <button className="primary compact" disabled={!adopted.length || isConverging} onClick={generateOutput}>{isConverging ? "Story Agent 收敛中…" : "收敛为剧情 →"}</button>
           </div>
+        </div>
+        <div className="graph-toolbar" style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+          <input value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="搜索节点" style={{ width: 180, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }} />
+          <select value={edgeMode} onChange={(event) => setEdgeMode(event.target.value as "all" | "hierarchy" | "semantic")} style={{ padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }}>
+            <option value="all">显示全部连线</option>
+            <option value="hierarchy">只看生成层级</option>
+            <option value="semantic">只看语义关系</option>
+          </select>
+          {searchText && <button className="secondary compact" onClick={() => setSearchText("")}>清除搜索</button>}
         </div>
         <div className="workspace-grid">
           <aside className="architecture-panel">
@@ -1188,13 +1319,13 @@ export default function Home() {
             <svg className="lines">
               <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" /></marker></defs>
               {Object.values(categoryMeta).map((meta) => <line key={meta.label} x1="460" y1="91" x2={meta.x} y2="178" className="hierarchy" />)}
-              {nodes.filter((n) => n.parentId).map((node) => { const p = nodes.find((n) => n.id === node.parentId); return p ? <line key={`h-${node.id}`} x1={p.x + 44} y1={p.y + 44} x2={node.x + 44} y2={node.y + 44} className="hierarchy"/> : null; })}
-              {edges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); return a && b ? <line key={edge.id} x1={a.x + 44} y1={a.y + 44} x2={b.x + 44} y2={b.y + 44} className={`semantic ${editingEdgeId === edge.id ? "editing" : ""}`} markerEnd={edge.direction !== "reverse" ? "url(#arrow)" : undefined} markerStart={edge.direction !== "forward" ? "url(#arrow)" : undefined}/> : null; })}
+              {edgeMode !== "semantic" && visibleHierarchyEdges.map((node) => { const p = nodes.find((n) => n.id === node.parentId); return p ? <line key={`h-${node.id}`} x1={p.x + 44} y1={p.y + 44} x2={node.x + 44} y2={node.y + 44} className="hierarchy"/> : null; })}
+              {edgeMode !== "hierarchy" && visibleSemanticEdges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); return a && b ? <line key={edge.id} x1={a.x + 44} y1={a.y + 44} x2={b.x + 44} y2={b.y + 44} className={`semantic ${editingEdgeId === edge.id ? "editing" : ""}`} markerEnd={edge.direction !== "reverse" ? "url(#arrow)" : undefined} markerStart={edge.direction !== "forward" ? "url(#arrow)" : undefined}/> : null; })}
               {relationSource && !editingEdgeId && (() => { const a = nodes.find((node) => node.id === relationSource); return a ? <line x1={a.x + 44} y1={a.y + 44} x2={pointer.x} y2={pointer.y} className="relation-preview" /> : null; })()}
             </svg>
-            {edges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); return a && b ? <button key={`label-${edge.id}`} className={`edge-label ${editingEdgeId === edge.id ? "active" : ""}`} style={{left: (a.x + b.x) / 2 + 44, top: (a.y + b.y) / 2 + 44}} onClick={(event) => { event.stopPropagation(); setEditingEdgeId(edge.id); setRelationSource(edge.source); setDraftRelation({label: edge.label, direction: edge.direction || "forward"}); }}>{edge.label}</button> : null; })}
+            {edgeMode !== "hierarchy" && visibleSemanticEdges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); return a && b ? <button key={`label-${edge.id}`} className={`edge-label ${editingEdgeId === edge.id ? "active" : ""}`} style={{left: (a.x + b.x) / 2 + 44, top: (a.y + b.y) / 2 + 44}} onClick={(event) => { event.stopPropagation(); setEditingEdgeId(edge.id); setRelationSource(edge.source); setDraftRelation({label: edge.label, direction: edge.direction || "forward"}); }}>{edge.label}</button> : null; })}
             {Object.entries(categoryMeta).map(([key, meta]) => <div key={key} className="category-node" style={{left: meta.x - 48, top: 130, borderColor: meta.color, color: meta.color}}>{meta.label}</div>)}
-            {nodes.map((node) => <div key={node.id} role="button" tabIndex={0}
+            {visibleNodes.map((node) => <div key={node.id} role="button" tabIndex={0}
               onClick={(event) => { event.stopPropagation(); if (!movedRef.current) nodeClick(node); }}
               onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") nodeClick(node); }}
               onMouseDown={(event) => {
@@ -1208,6 +1339,7 @@ export default function Home() {
                 setSelectedId(node.id);
               }}
               className={`graph-node ${node.status} ${selectedId === node.id ? "selected" : ""} ${relationSource === node.id ? "connecting" : ""} ${relationSource && relationSource !== node.id ? "valid-target" : ""}`} style={{left: node.x, top: node.y, borderColor: categoryMeta[node.category].color}} title={node.description}>
+              <button type="button" aria-label={`选择${node.title}生长`} onClick={(event) => { event.stopPropagation(); toggleGrowSelection(node.id); }} style={{position:"absolute",left:6,top:6,width:18,height:18,lineHeight:"16px",fontSize:11,border:"1px solid var(--line)",borderRadius:999,background:"white",cursor:"pointer",zIndex:6}}>{selectedGrowIds.includes(node.id) ? "☑" : "☐"}</button>
               <span className="node-state">{node.status === "adopted" ? "✓" : node.status === "excluded" ? "×" : node.status === "needs_review" ? "!" : "○"}</span>
               <strong>{node.title}</strong><small>{node.subtype || categoryMeta[node.category].label}</small>
               {node.growthMode && <span className="growth-badge">生长候选</span>}
@@ -1223,6 +1355,9 @@ export default function Home() {
               ) : (
                 <div className="relation-candidates"><button onClick={() => setDraftRelation((value) => ({...value, label: "触发并推动"}))}>触发并推动</button><button onClick={() => setDraftRelation((value) => ({...value, label: "阻碍并升级"}))}>阻碍并升级</button><button onClick={() => setDraftRelation((value) => ({...value, label: "形成反转"}))}>形成反转</button></div>
               )}
+              <div className="relation-toolbar" style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+                <button className="secondary" style={{ padding: "4px 8px", fontSize: 9 }} disabled={isLoadingRelations} onClick={() => void refreshRelationCandidates()}>换一批</button>
+              </div>
               {/* eslint-disable-next-line jsx-a11y/no-autofocus -- 打开编辑器即聚焦输入，提升演示效率 */}
               <input value={draftRelation.label} onChange={(event) => setDraftRelation((value) => ({...value, label: event.target.value}))} placeholder="输入关系" autoFocus />
               <div className="direction-picker"><button className={draftRelation.direction === "forward" ? "active" : ""} onClick={() => setDraftRelation((value) => ({...value, direction: "forward"}))}>起点→终点</button><button className={draftRelation.direction === "reverse" ? "active" : ""} onClick={() => setDraftRelation((value) => ({...value, direction: "reverse"}))}>终点→起点</button><button className={draftRelation.direction === "both" ? "active" : ""} onClick={() => setDraftRelation((value) => ({...value, direction: "both"}))}>双向</button></div>
@@ -1310,16 +1445,34 @@ export default function Home() {
         <div className="output-intro"><p className="eyebrow">TRACEABLE STORY OUTPUT</p><h1>每一个剧情节拍，<br/>都有图谱依据。</h1><p>系统只读取已采用子图；未采用和已排除节点不会进入最终生成上下文。</p><div className="head-actions output-actions" style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 18 }}><button className="secondary" onClick={exportStoryMarkdown}>导出 Markdown</button><button className="secondary" onClick={exportStoryCsv}>导出分镜 CSV</button><button className="secondary" onClick={copyStoryText}>{exportNotice || "复制全文"}</button><button className="secondary" onClick={() => setStage("graph")}>← 返回图谱调整</button></div></div>
         {convergeError && <p className="generation-error">{convergeError}</p>}
         <div className="story-card">
-          <div className="story-head"><div><small>ONE-LINE CONCEPT</small><h2>{storyConcept?.concept || "每个人都有十秒钟，成为水世界国王。"}</h2></div><span>{traceId || "story-draft"}</span></div>
-          {storyConcept && <div className="story-meta"><div><small>核心主题</small><strong>{storyConcept.theme}</strong></div><div><small>叙事视角</small><strong>{storyConcept.perspective}</strong></div><div><small>故事主线</small><strong>{storyConcept.main_line}</strong></div></div>}
+          <div className="story-head"><div><small>ONE-LINE CONCEPT</small>{storyConcept ? <input value={storyConcept.concept} onChange={(event) => updateStoryField("concept", event.target.value)} style={{ width: "100%", font: "inherit", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px", background: "white" }} /> : <h2>每个人都有十秒钟，成为水世界国王。</h2>}</div><div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><span>{traceId || "story-draft"}</span><button className="secondary" disabled={!storyConcept} onClick={saveStoryVersion}>保存版本</button></div></div>
+          {storyConcept && <div className="story-meta"><div><small>核心主题</small><input value={storyConcept.theme} onChange={(event) => updateStoryField("theme", event.target.value)} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 12 }} /></div><div><small>叙事视角</small><input value={storyConcept.perspective} onChange={(event) => updateStoryField("perspective", event.target.value)} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 12 }} /></div><div><small>故事主线</small><input value={storyConcept.main_line} onChange={(event) => updateStoryField("main_line", event.target.value)} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 12 }} /></div></div>}
           <div className="concept-grid">
-            <div><small>核心冲突</small><strong>{storyConcept?.core_conflict || "现任国王抵挡全场挑战者"}</strong></div>
-            <div><small>卖点植入</small><strong>{storyConcept?.selling_point_insertion || "水枪玩法即剧情机制"}</strong></div>
-            <div><small>记忆点</small><strong>{storyConcept?.twist || "透明王冠最后一秒换人"}</strong></div>
+            <div><small>核心冲突</small>{storyConcept ? <input value={storyConcept.core_conflict} onChange={(event) => updateStoryField("core_conflict", event.target.value)} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 12 }} /> : <strong>现任国王抵挡全场挑战者</strong>}</div>
+            <div><small>卖点植入</small>{storyConcept ? <input value={storyConcept.selling_point_insertion} onChange={(event) => updateStoryField("selling_point_insertion", event.target.value)} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 12 }} /> : <strong>水枪玩法即剧情机制</strong>}</div>
+            <div><small>记忆点</small>{storyConcept ? <input value={storyConcept.twist} onChange={(event) => updateStoryField("twist", event.target.value)} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 12 }} /> : <strong>透明王冠最后一秒换人</strong>}</div>
           </div>
-          <div className="beats">{(storyConcept?.beats?.length ? storyConcept.beats : story).map((beat, index) => <article key={beat.phase + index}><b>{String(index + 1).padStart(2,"0")}</b><div><small>{beat.phase}</small><p>{beat.text}</p><div className="refs">{beat.refs.map((ref) => <span key={ref}>↗ {nodes.find((n) => n.id === ref)?.title || ref}</span>)}{!beat.refs.length && <span>Brief 约束</span>}</div></div></article>)}</div>
-          {storyConcept?.shooting_feasibility && <div className="shooting-note"><small>拍摄可行性</small><p>{storyConcept.shooting_feasibility}</p></div>}
+          <div className="beats">{(storyConcept?.beats?.length ? storyConcept.beats : story).map((beat, index) => <article key={beat.phase + index}><b>{String(index + 1).padStart(2,"0")}</b><div>{storyConcept ? <><input value={beat.phase} onChange={(event) => updateBeat(index, { phase: event.target.value })} style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", background: "white", fontSize: 11 }} /><textarea rows={2} value={beat.text} onChange={(event) => updateBeat(index, { text: event.target.value })} style={{ width: "100%", marginTop: 6, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }} /></> : <><small>{beat.phase}</small><p>{beat.text}</p></>}<div className="refs">{beat.refs.map((ref) => <span key={ref}>↗ {nodes.find((n) => n.id === ref)?.title || ref}</span>)}{!beat.refs.length && <span>Brief 约束</span>}</div></div></article>)}</div>
+          {storyConcept?.shooting_feasibility && <div className="shooting-note"><small>拍摄可行性</small><textarea rows={2} value={storyConcept.shooting_feasibility} onChange={(event) => updateStoryField("shooting_feasibility", event.target.value)} style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }} /></div>}
+          {storyConcept?.cta && <div className="shooting-note"><small>CTA</small><input value={storyConcept.cta} onChange={(event) => updateStoryField("cta", event.target.value)} style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }} /></div>}
           <div className="validation-bar"><span>✓ Schema</span><span>✓ 节点引用</span><span>✓ {durationSeconds} 秒时长</span><span>✓ 禁用内容</span><strong>{isConverging ? "Story Agent 生成中…" : "validation passed"}</strong></div>
+          <div className="ai-panel" style={{ marginTop: 20, borderTop: "1px solid var(--line)", paddingTop: 16 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}><strong>AI 微调助手</strong><small style={{ color: "var(--muted)" }}>修改前先给差异预览，不直接覆盖正式版本</small></div>
+            <div className="quick-prompts" style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "10px 0" }}>
+              {["节奏更快", "反转更强", "卖点更自然", "降低拍摄成本"].map((prompt) => <button key={prompt} className="secondary" style={{ padding: "4px 8px", fontSize: 9 }} onClick={() => setAiPrompt(prompt)}>{prompt}</button>)}
+            </div>
+            <textarea rows={3} value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="例如：让前 3 秒冲突更强，但不要增加拍摄角色" style={{ width: "100%", padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }} />
+            <button className="primary compact" style={{ marginTop: 8 }} disabled={!storyConcept || !aiPrompt.trim() || aiLoading} onClick={() => void generateAiDiff()}>{aiLoading ? "生成中…" : "生成修改建议"}</button>
+            {aiError && <p style={{ color: "#a63e2c", fontSize: 10, marginTop: 8 }}>{aiError}</p>}
+            {aiDiff && <div className="diff-preview" style={{ marginTop: 12, border: "1px solid var(--line)", padding: 10, background: "#f7f4ee" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><strong>差异预览</strong><span style={{ color: "var(--muted)", fontSize: 9 }}>未应用</span></div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                <div><span style={{ fontSize: 9, color: "var(--muted)" }}>修改前</span><pre style={{ whiteSpace: "pre-wrap", fontSize: 10 }}>{JSON.stringify(aiDiff.before, null, 2)}</pre></div>
+                <div><span style={{ fontSize: 9, color: "var(--muted)" }}>修改后</span><pre style={{ whiteSpace: "pre-wrap", fontSize: 10 }}>{JSON.stringify(aiDiff.after, null, 2)}</pre></div>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button className="secondary" disabled onClick={() => setAiDiff(null)}>拒绝</button><button className="secondary" disabled title="待技术接入">部分接受</button><button className="primary compact" disabled title="待技术接入">全部接受</button></div>
+            </div>}
+          </div>
         </div>
         <aside className="output-side"><div><small>来源图谱</small><strong>revision {revision}</strong></div><div><small>已采用节点</small><strong>{adopted.length}</strong></div><div><small>已采用关系</small><strong>{adoptedEdges.length}</strong></div><div><small>生成方式</small><strong>{storyConcept ? "Story Agent" : "前端模板"}</strong></div><p>输出保存为新版本，不覆盖此前剧情。用户可按节拍局部修改并选择性接受。</p></aside>
       </section>}

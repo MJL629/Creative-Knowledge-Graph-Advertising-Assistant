@@ -145,3 +145,15 @@ export function saveStory(projectId: string, body: { graphRevision: number; cont
     body: JSON.stringify(body),
   });
 }
+
+export function reviseStory(body: {
+  story: unknown;
+  instruction: string;
+  adoptedNodes?: unknown[];
+  adoptedEdges?: unknown[];
+}) {
+  return apiFetch<{ before: unknown; after: unknown; changes: unknown[] }>("/api/story/revise", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

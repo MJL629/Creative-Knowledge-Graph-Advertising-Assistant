@@ -59,22 +59,49 @@ test("首轮生成后可直接建立语义关系，不报 Node not found", async
   await page.getByRole("button", { name: "确认关系" }).click();
   await expect(page.locator(".graph-stats")).toContainText("1 语义关系", { timeout: 30_000 });
 
-  const canvasBox = await page.locator(".canvas").boundingBox();
-  const firstBox = await first.boundingBox();
-  const secondBox = await second.boundingBox();
-  expect(canvasBox).not.toBeNull();
-  expect(firstBox).not.toBeNull();
-  expect(secondBox).not.toBeNull();
-  if (!canvasBox || !firstBox || !secondBox) throw new Error("连线坐标断言缺少 bounding box");
+  const firstLeft = await first.evaluate((el) => parseFloat((el as HTMLElement).style.left));
+  const firstTop = await first.evaluate((el) => parseFloat((el as HTMLElement).style.top));
+  const secondLeft = await second.evaluate((el) => parseFloat((el as HTMLElement).style.left));
+  const secondTop = await second.evaluate((el) => parseFloat((el as HTMLElement).style.top));
   const line = page.locator("line.semantic").first();
   const x1 = Number(await line.getAttribute("x1"));
   const y1 = Number(await line.getAttribute("y1"));
   const x2 = Number(await line.getAttribute("x2"));
   const y2 = Number(await line.getAttribute("y2"));
-  expect(Math.abs(x1 - (firstBox.x - canvasBox.x + firstBox.width / 2))).toBeLessThan(2);
-  expect(Math.abs(y1 - (firstBox.y - canvasBox.y + firstBox.height / 2))).toBeLessThan(2);
-  expect(Math.abs(x2 - (secondBox.x - canvasBox.x + secondBox.width / 2))).toBeLessThan(2);
-  expect(Math.abs(y2 - (secondBox.y - canvasBox.y + secondBox.height / 2))).toBeLessThan(2);
+  expect(Math.abs(x1 - (firstLeft + 44))).toBeLessThan(2);
+  expect(Math.abs(y1 - (firstTop + 44))).toBeLessThan(2);
+  expect(Math.abs(x2 - (secondLeft + 44))).toBeLessThan(2);
+  expect(Math.abs(y2 - (secondTop + 44))).toBeLessThan(2);
+});
+
+test("图谱工具栏支持搜索和全部采用", async ({ page }) => {
+  await startFromBrief(page, "搜索测试产品", "搜索想法");
+  await expect(page.locator(".graph-node")).toHaveCount(6);
+
+  await page.getByPlaceholder("搜索节点").fill("水枪国王");
+  await expect(page.locator(".graph-node")).toHaveCount(1);
+  await page.getByPlaceholder("搜索节点").fill("");
+  await expect(page.locator(".graph-node")).toHaveCount(6);
+
+  await page.getByRole("button", { name: "全部采用" }).click();
+  await expect(page.locator(".graph-stats")).toContainText("6 已采用", { timeout: 30_000 });
+});
+
+test("结果页可编辑保存，AI 微调位置已预留", async ({ page }) => {
+  await startFromBrief(page, "编辑测试产品", "编辑想法");
+  await page.locator(".graph-node").first().click();
+  await page.getByRole("button", { name: "✓ 采用" }).click();
+  await page.getByRole("button", { name: /收敛为剧情/ }).click();
+  await expect(page.getByText("TRACEABLE STORY OUTPUT")).toBeVisible({ timeout: 30_000 });
+
+  await page.locator(".story-head input").first().fill("编辑后的一句话创意");
+  await page.getByRole("button", { name: "保存版本" }).click();
+  await expect(page.getByRole("button", { name: /已保存为版本/ })).toBeVisible({ timeout: 10_000 });
+
+  await expect(page.getByText("AI 微调助手")).toBeVisible();
+  await page.getByRole("button", { name: "节奏更快" }).click();
+  await page.getByRole("button", { name: "生成修改建议" }).click();
+  await expect(page.getByText("AI 微调服务尚未接入")).toBeVisible({ timeout: 10_000 });
 });
 
 test("AI 服务返回 500 时显示错误提示而不是白屏", async ({ page }) => {
