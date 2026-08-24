@@ -58,6 +58,23 @@ test("首轮生成后可直接建立语义关系，不报 Node not found", async
   await expect(page.locator(".relation-editor")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "确认关系" }).click();
   await expect(page.locator(".graph-stats")).toContainText("1 语义关系", { timeout: 30_000 });
+
+  const canvasBox = await page.locator(".canvas").boundingBox();
+  const firstBox = await first.boundingBox();
+  const secondBox = await second.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  expect(firstBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+  if (!canvasBox || !firstBox || !secondBox) throw new Error("连线坐标断言缺少 bounding box");
+  const line = page.locator("line.semantic").first();
+  const x1 = Number(await line.getAttribute("x1"));
+  const y1 = Number(await line.getAttribute("y1"));
+  const x2 = Number(await line.getAttribute("x2"));
+  const y2 = Number(await line.getAttribute("y2"));
+  expect(Math.abs(x1 - (firstBox.x - canvasBox.x + firstBox.width / 2))).toBeLessThan(2);
+  expect(Math.abs(y1 - (firstBox.y - canvasBox.y + firstBox.height / 2))).toBeLessThan(2);
+  expect(Math.abs(x2 - (secondBox.x - canvasBox.x + secondBox.width / 2))).toBeLessThan(2);
+  expect(Math.abs(y2 - (secondBox.y - canvasBox.y + secondBox.height / 2))).toBeLessThan(2);
 });
 
 test("AI 服务返回 500 时显示错误提示而不是白屏", async ({ page }) => {

@@ -1185,7 +1185,7 @@ export default function Home() {
             onClick={() => { if ((relationSource || editingEdgeId) && !movedRef.current) cancelDraftRelation(); }}
           >
             <div className="source-node"><span>推广对象</span><strong>{product}</strong></div>
-            <svg className="lines" viewBox="0 0 920 650" preserveAspectRatio="none">
+            <svg className="lines">
               <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" /></marker></defs>
               {Object.values(categoryMeta).map((meta) => <line key={meta.label} x1="460" y1="91" x2={meta.x} y2="178" className="hierarchy" />)}
               {nodes.filter((n) => n.parentId).map((node) => { const p = nodes.find((n) => n.id === node.parentId); return p ? <line key={`h-${node.id}`} x1={p.x + 44} y1={p.y + 44} x2={node.x + 44} y2={node.y + 44} className="hierarchy"/> : null; })}
