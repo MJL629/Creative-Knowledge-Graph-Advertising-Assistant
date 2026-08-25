@@ -117,6 +117,17 @@ test("session persistence is wired (FR-11)", async () => {
   assert.match(page, /await commitPendingCandidatesBeforeNextAction\(\)/);
 });
 
+test("prototype-first story optimization route and diff UI are wired", async () => {
+  const [route, page] = await Promise.all([
+    readFile(new URL("../app/api/graph/optimize/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(route, /callDeepSeekJson/);
+  assert.match(page, /剧情微调助手/);
+  assert.match(page, /generateAiDiff/);
+  assert.match(page, /applyAiDiff/);
+});
+
 test("needs_review status and propagation wired (FR-12 / PRD 5.2)", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /needs_review/);
@@ -150,6 +161,17 @@ test("node fields and layout wired (PRD 7.1 / FR-03)", async () => {
   // 拖拽与层级整理
   assert.match(page, /setDragState/);
   assert.match(page, /autoLayout/);
+  assert.match(page, /const py = event\.clientY - canvas\.top/);
+  assert.doesNotMatch(page, /event\.clientY - canvas\.top\) \* 650/);
+  assert.match(page, /requestedParentExists \? candidate\.parentRef : parent\.id/);
+  assert.match(page, /!node\.parentId && \(node\.depth \?\? 1\) <= 1/);
+  assert.match(page, /Math\.ceil\(layerNodes\.length \/ columns\)/);
+  // 新一轮首图必须使用空项目，避免首次“采用”时合并数据库中的旧图谱。
+  assert.match(page, /const activeProjectId = await ensureProject\(true\)/);
+  assert.match(page, /if \(projectId && !createFresh\)/);
+  assert.match(page, /const initialLabel = "正在分析关系"/);
+  assert.match(page, /if \(isLoadingRelations\) return/);
+  assert.match(page, /freePosition\(candidate\.category, \[\.\.\.nodes, \.\.\.additions\], parent\)/);
 });
 
 test("project API supports create, read, update, list, delete and 404", async () => {

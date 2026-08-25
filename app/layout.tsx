@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "创意织图 · PRD 架构 Demo",
-  description: "从 Brief 到可追溯短视频剧情的创意知识图谱演示。",
+  title: "创意生长图谱 · AI Creative Graph",
+  description: "从碎片想法开始，把灵感长成一张可编辑、可追溯的短视频剧情图谱。",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 
