@@ -77,7 +77,16 @@ type WorkflowState = {
 };
 
 async function readApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
-  return response.json() as Promise<ApiEnvelope<T>>;
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as ApiEnvelope<T>;
+  } catch {
+    return {
+      ok: false,
+      result: undefined as T,
+      error: { message: text.trim() || `HTTP ${response.status}` },
+    };
+  }
 }
 
 function splitList(value: string) {
@@ -500,6 +509,13 @@ export default function Home() {
     return payload.result;
   }
 
+  async function commitPendingCandidatesBeforeNextAction() {
+    if (!workflowThreadId || pendingCandidateIds.size === 0) return;
+    const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
+    if (!pendingNodes.length) return;
+    await resumeWorkflow(pendingNodes.map((node) => addNodeOperation(node, node.status)));
+  }
+
   async function runInitialGeneration() {
     setIsGenerating(true);
     setGenerationError("");
@@ -750,6 +766,9 @@ export default function Home() {
     setGrowthError("");
     setRequest(`graph.grow.v2 · ${modeMeta?.label} · 四 Agent 运行中`);
     try {
+      // A candidate exists only in browser state until its paused workflow is
+      // resumed. Materialize it before a new workflow tries to load it by ID.
+      await commitPendingCandidatesBeforeNextAction();
       void anchor;
       void featureRefs;
       const workflow = await startWorkflow({
@@ -816,6 +835,9 @@ export default function Home() {
       const sourceNode = nodes.find((n) => n.id === sourceId);
       const targetNode = nodes.find((n) => n.id === targetId);
       if (!sourceNode || !targetNode) throw new Error("端点节点不存在");
+      // Relations may be requested directly from freshly generated candidates.
+      // Persist the paused candidate batch before server-side endpoint lookup.
+      await commitPendingCandidatesBeforeNextAction();
       const workflow = await startWorkflow({ intent: "relations", sourceNodeId: sourceId, targetNodeId: targetId, needRag: false });
       const result = workflow.candidateResult as { relations?: RelationCandidate[] };
       const candidates: RelationCandidate[] = result?.relations || [];

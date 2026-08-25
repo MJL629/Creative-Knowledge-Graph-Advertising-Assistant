@@ -7,6 +7,9 @@ let workerPromise;
 async function getWorker() {
   if (!workerPromise) {
     process.env.CREATIVE_MODEL_PROVIDER = "mock";
+    process.env.PERSISTENCE_PROVIDER = "memory";
+    process.env.WORKFLOW_CHECKPOINTER = "memory";
+    process.env.NODE_ENV = "test";
     const workerUrl = new URL("../dist/server/index.js", import.meta.url);
     workerUrl.searchParams.set("test", `${process.pid}`);
     workerPromise = import(workerUrl.href).then((module) => module.default);
@@ -108,6 +111,10 @@ test("session persistence is wired (FR-11)", async () => {
   assert.match(page, /deleteNodeOnly/);
   assert.match(page, /deleteCascade/);
   assert.match(page, /saveEditNode/);
+  // Fresh browser-only candidates must be committed before grow/relation
+  // workflows ask the server repository to resolve their IDs.
+  assert.match(page, /commitPendingCandidatesBeforeNextAction/);
+  assert.match(page, /await commitPendingCandidatesBeforeNextAction\(\)/);
 });
 
 test("needs_review status and propagation wired (FR-12 / PRD 5.2)", async () => {

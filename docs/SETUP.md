@@ -13,10 +13,11 @@ Copy `.env.example` to `.env`. The committed values are local-only samples; neve
 
 ```bash
 npm run db:migrate
+npm run db:verify
 npm run dev
 ```
 
-For a fully persistent local run, set `PERSISTENCE_PROVIDER=postgres`, `WORKFLOW_CHECKPOINTER=postgres`, and point `DATABASE_URL`/`WORKFLOW_DATABASE_URL` at the local container.
+PostgreSQL is the default for both business persistence and workflow checkpoints. `memory` remains an explicit test/demo fallback only. `npm run db:setup` combines migration and database/checkpointer verification.
 
 ## Verification
 
