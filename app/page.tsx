@@ -432,9 +432,14 @@ export default function Home() {
     };
   }
 
-  function applyServerGraph(snapshot: GraphSnapshot) {
+  function applyServerGraph(snapshot: GraphSnapshot, preservePending = false) {
     const graph = toUiGraph(snapshot);
-    setNodes(graph.nodes);
+    setNodes((current) => {
+      if (!preservePending) return graph.nodes;
+      const serverNodeIds = new Set(graph.nodes.map((node) => node.id));
+      const localPending = current.filter((node) => pendingCandidateIds.has(node.id) && !serverNodeIds.has(node.id));
+      return [...graph.nodes, ...localPending];
+    });
     setEdges(graph.edges);
     setRevision(graph.revision);
   }
@@ -464,24 +469,29 @@ export default function Home() {
     return payload.result.id;
   }
 
-  async function commitOperations(operations: GraphOperation[], targetProjectId = projectId) {
+  async function commitOperations(operations: GraphOperation[], targetProjectId = projectId, expectedRevision = revision) {
     if (!targetProjectId) throw new Error("请先创建项目");
     const response = await fetch("/api/graph/commit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         projectId: targetProjectId,
-        expectedRevision: revision,
-        operationId: await operationIdFor(revision, operations),
+        expectedRevision,
+        operationId: await operationIdFor(expectedRevision, operations),
         operations,
       }),
     });
     const payload = await readApiEnvelope<GraphSnapshot>(response);
     if (!response.ok || !payload.ok) {
-      if (response.status === 409 && payload.error?.details?.snapshot) applyServerGraph(payload.error.details.snapshot);
+      if (response.status === 409 && payload.error?.details?.snapshot) {
+        applyServerGraph(payload.error.details.snapshot, pendingCandidateIds.size > 0);
+      }
       throw new Error(payload.error?.message || "图谱提交失败");
     }
-    applyServerGraph(payload.result);
+    // Saving a persisted parent (for example after dragging it) returns a
+    // repository-only snapshot. Merge paused local children back into that
+    // snapshot until their workflow is committed.
+    applyServerGraph(payload.result, pendingCandidateIds.size > 0);
     return payload.result;
   }
 
@@ -519,10 +529,23 @@ export default function Home() {
     });
     const payload = await readApiEnvelope<WorkflowState>(response);
     if (!response.ok || !payload.ok) {
-      if (response.status === 409 && payload.error?.details?.snapshot) applyServerGraph(payload.error.details.snapshot);
-      throw new Error(payload.error?.message || "Workflow 恢复失败");
+      // A revision conflict snapshot only contains persisted nodes. Preserve
+      // paused local candidates so a conflict cannot make them disappear.
+      const conflictSnapshot = response.status === 409 ? payload.error?.details?.snapshot as GraphSnapshot | undefined : undefined;
+      if (conflictSnapshot) applyServerGraph(conflictSnapshot, true);
+      const workflowError = new Error(payload.error?.message || "Workflow 恢复失败") as Error & { conflictSnapshot?: GraphSnapshot };
+      workflowError.conflictSnapshot = conflictSnapshot;
+      throw workflowError;
     }
-    if (payload.result.graphSnapshot) applyServerGraph(payload.result.graphSnapshot);
+    if (payload.result.graphSnapshot) {
+      const addedNodeIds = operations
+        .filter((operation): operation is Extract<GraphOperation, { type: "ADD_NODE" }> => operation.type === "ADD_NODE")
+        .map((operation) => String(operation.node.id));
+      const snapshotNodeIds = new Set(payload.result.graphSnapshot.nodes.map((node) => node.id));
+      const missingNodeIds = addedNodeIds.filter((nodeId) => !snapshotNodeIds.has(nodeId));
+      if (missingNodeIds.length) throw new Error("服务端提交结果缺少生长候选，已保留本地节点，请重试");
+      applyServerGraph(payload.result.graphSnapshot);
+    }
     setWorkflowThreadId(null);
     setPendingCandidateIds(new Set());
     localStorage.removeItem(THREAD_KEY);
@@ -588,11 +611,26 @@ export default function Home() {
 
   async function updateStatus(id: string, status: Status) {
     if (pendingCandidateIds.has(id) && workflowThreadId) {
+      const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
+      const pendingOperations = pendingNodes.map((node) => addNodeOperation(node, node.id === id ? status : node.status));
       try {
-        const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
-        await resumeWorkflow(pendingNodes.map((node) => addNodeOperation(node, node.id === id ? status : node.status)));
+        await resumeWorkflow(pendingOperations);
         setRequest(`Workflow 已恢复 · ${status} · Graph Commit 完成`);
       } catch (error) {
+        const conflictSnapshot = (error as Error & { conflictSnapshot?: GraphSnapshot }).conflictSnapshot;
+        if (conflictSnapshot) {
+          try {
+            await commitOperations(pendingOperations, projectId, conflictSnapshot.revision);
+            setWorkflowThreadId(null);
+            setPendingCandidateIds(new Set());
+            localStorage.removeItem(THREAD_KEY);
+            setRequest(`Workflow revision 已更新 · ${status} · 候选已直接提交`);
+            return;
+          } catch (fallbackError) {
+            setRequest(`候选提交失败 · ${fallbackError instanceof Error ? fallbackError.message : "未知错误"}`);
+            return;
+          }
+        }
         setRequest(`Workflow 提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
       }
       return;
@@ -751,7 +789,7 @@ export default function Home() {
     if (!movedNode) return;
     // Growth/divergence candidates are materialized only when their paused
     // workflow resumes. Keep their final drag position locally until then.
-    if (pendingCandidateIds.has(movedNode.id)) {
+    if (pendingCandidateIds.size > 0) {
       setRequest("layout.drag · 候选位置已更新 · 采用时保存");
       return;
     }

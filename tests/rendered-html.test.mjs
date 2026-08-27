@@ -172,9 +172,13 @@ test("node fields and layout wired (PRD 7.1 / FR-03)", async () => {
   assert.match(page, /const initialLabel = "正在分析关系"/);
   assert.match(page, /if \(isLoadingRelations\) return/);
   assert.match(page, /freePosition\(candidate\.category, \[\.\.\.nodes, \.\.\.additions\], parent\)/);
-  assert.match(page, /if \(pendingCandidateIds\.has\(movedNode\.id\)\)/);
-  assert.match(page, /候选位置已更新 · 采用时保存/);
   assert.match(page, /if \(pendingCandidateIds\.size > 0\)/);
+  assert.match(page, /候选位置已更新 · 采用时保存/);
+  assert.match(page, /applyServerGraph\(conflictSnapshot, true\)/);
+  assert.match(page, /服务端提交结果缺少生长候选，已保留本地节点，请重试/);
+  assert.match(page, /applyServerGraph\(payload\.result, pendingCandidateIds\.size > 0\)/);
+  assert.match(page, /commitOperations\(pendingOperations, projectId, conflictSnapshot\.revision\)/);
+  assert.match(page, /Workflow revision 已更新/);
 });
 
 test("project API supports create, read, update, list, delete and 404", async () => {
