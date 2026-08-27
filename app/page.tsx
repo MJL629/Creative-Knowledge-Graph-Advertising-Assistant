@@ -723,11 +723,19 @@ export default function Home() {
       });
       rowOffset += Math.max(1, Math.ceil(layerNodes.length / columns));
     });
+    const arrangedNodes = nodes.map((node) => ({ ...node, ...positionMap.get(node.id) }));
+    setNodes(arrangedNodes);
+    // Paused workflow candidates do not exist in the repository yet. Sending
+    // UPDATE_NODE for them makes the returned server snapshot omit them.
+    if (pendingCandidateIds.size > 0) {
+      setRequest("layout.auto · 候选布局已更新 · 采用时保存");
+      return;
+    }
     try {
-      await commitOperations(nodes.map((node) => ({
+      await commitOperations(arrangedNodes.map((node) => ({
         type: "UPDATE_NODE" as const,
         nodeId: node.id,
-        patch: { position: positionMap.get(node.id) },
+        patch: { position: { x: node.x, y: node.y } },
       })));
       setRequest("layout.auto · 按层级整理完成 · 已提交");
     } catch (error) {
@@ -741,6 +749,12 @@ export default function Home() {
     setDragState(null);
     setTimeout(() => { movedRef.current = false; }, 0);
     if (!movedNode) return;
+    // Growth/divergence candidates are materialized only when their paused
+    // workflow resumes. Keep their final drag position locally until then.
+    if (pendingCandidateIds.has(movedNode.id)) {
+      setRequest("layout.drag · 候选位置已更新 · 采用时保存");
+      return;
+    }
     try {
       await commitOperations([{ type: "UPDATE_NODE", nodeId: movedNode.id, patch: { position: { x: movedNode.x, y: movedNode.y } } }]);
     } catch (error) {
