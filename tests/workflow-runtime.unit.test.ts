@@ -31,13 +31,19 @@ class FakeGateway implements CreativeAgentGateway {
   }
 }
 
-const retrieval: RetrievalProvider = {
-  async retrieve(input) { return { query: input.query, hits: [] }; },
-};
+class FakeRetrieval implements RetrievalProvider {
+  calls = 0;
+
+  async retrieve(input: Parameters<RetrievalProvider["retrieve"]>[0]) {
+    this.calls += 1;
+    return { query: input.query, hits: [] };
+  }
+}
 
 async function fixture() {
   const repository = new MemoryProjectRepository();
   const gateway = new FakeGateway();
+  const retrieval = new FakeRetrieval();
   const project = await repository.createProject({
     name: "Workflow fixture",
     brief: { product: "Fixture", knownFacts: ["Known"], ideaFragments: ["Start"] },
@@ -48,8 +54,22 @@ async function fixture() {
     agentGateway: gateway,
     checkpointerProvider: new MemoryWorkflowCheckpointerProvider(),
   });
-  return { repository, gateway, project, runtime };
+  return { repository, gateway, project, retrieval, runtime };
 }
+
+test("RAG runs only when the workflow input explicitly enables it", async () => {
+  const { project, retrieval, runtime } = await fixture();
+
+  await runtime.start({ projectId: project.id, threadId: "thread-no-rag" });
+  assert.equal(retrieval.calls, 0);
+
+  await runtime.start({
+    projectId: project.id,
+    threadId: "thread-explicit-rag",
+    needRag: true,
+  });
+  assert.equal(retrieval.calls, 1);
+});
 
 test("start interrupts and resume commit does not auto-grow or regenerate", async () => {
   const { repository, gateway, project, runtime } = await fixture();

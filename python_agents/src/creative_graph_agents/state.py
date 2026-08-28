@@ -57,6 +57,20 @@ class AnalysisPlan(TypedDict):
     need_external_tool: bool
 
 
+class SelectedCaseSkill(TypedDict):
+    skill_id: str
+    title: str
+    reason: str
+    stages: list[str]
+    example: dict[str, Any]
+
+
+class CaseSkillContext(TypedDict):
+    catalog_version: str
+    selection_mode: Literal["auto", "disabled"]
+    selected: list[SelectedCaseSkill]
+
+
 class ProtagonistOption(TypedDict):
     role: str
     motivation: str
@@ -662,6 +676,7 @@ class SharedState(TypedDict):
     brief: NormalizedBrief
     messages: list[AgentMessage]
     plan: AnalysisPlan
+    case_skill_context: CaseSkillContext
     analyses: CreativeAnalyses
     draft: CreativeDraft
     validation: ValidationResult
@@ -715,6 +730,16 @@ def empty_plan() -> AnalysisPlan:
         "need_rag": False,
         "need_memory": False,
         "need_external_tool": False,
+    }
+
+
+def empty_case_skill_context(
+    selection_mode: Literal["auto", "disabled"] = "auto",
+) -> CaseSkillContext:
+    return {
+        "catalog_version": "creative-case-patterns-v1",
+        "selection_mode": selection_mode,
+        "selected": [],
     }
 
 
@@ -1153,13 +1178,22 @@ def create_initial_state(
     if max_iterations < 0 or max_iterations > 5:
         raise ValueError("max_iterations must be between 0 and 5")
 
+    raw_brief = deepcopy(dict(brief_input or {}))
+    requested_skill_mode = str(
+        raw_brief.get("caseSkillMode", raw_brief.get("case_skill_mode", "auto"))
+    ).strip().lower()
+    case_skill_mode: Literal["auto", "disabled"] = (
+        "disabled" if requested_skill_mode == "disabled" else "auto"
+    )
+
     state: SharedState = {
         "task_id": task_id.strip(),
         "input_text": input_text,
-        "raw_brief": deepcopy(dict(brief_input or {})),
+        "raw_brief": raw_brief,
         "brief": empty_brief(),
         "messages": [],
         "plan": empty_plan(),
+        "case_skill_context": empty_case_skill_context(case_skill_mode),
         "analyses": empty_analyses(),
         "draft": empty_draft(),
         "validation": empty_validation(),
@@ -1177,9 +1211,9 @@ def create_initial_state(
         "max_iterations": max_iterations,
         "errors": [],
         "metadata": {
-            "state_version": "shared-state-v3",
-            "prompt_version": "first-round-v1",
-            "schema_version": "first-round-v1",
+            "state_version": "shared-state-v4-case-skills",
+            "prompt_version": "first-round-v2-case-skills",
+            "schema_version": "first-round-v2-case-skills",
             "model_calls": 0,
             "last_agent": "",
             "created_at": utc_now(),
@@ -1216,6 +1250,7 @@ def rebuild_state(state: SharedState, **changes: Any) -> SharedState:
         "brief": deepcopy(state["brief"]),
         "messages": deepcopy(state["messages"]),
         "plan": deepcopy(state["plan"]),
+        "case_skill_context": deepcopy(state["case_skill_context"]),
         "analyses": deepcopy(state["analyses"]),
         "draft": deepcopy(state["draft"]),
         "validation": deepcopy(state["validation"]),

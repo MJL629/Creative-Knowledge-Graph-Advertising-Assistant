@@ -70,8 +70,10 @@ export function createWorkflowNodes(dependencies: WorkflowDependencies) {
     async contextPlan(state: CreativeState): Promise<CreativeStateUpdate> {
       const { brief } = requireGraph(state);
       const query = [brief.product, ...(brief.ideaFragments ?? [])].filter(Boolean).join(" ");
-      const needRag = state.needRag || (!brief.knownFacts?.length && Boolean(query));
-      return { needRag, retrievalQuery: query };
+      // Creative Case Skill is the default context mechanism. RAG remains an
+      // explicit compatibility path only when the caller deliberately sends
+      // needRag=true; missing known facts must not silently re-enable it.
+      return { needRag: state.needRag, retrievalQuery: query };
     },
 
     async retrieveContext(state: CreativeState): Promise<CreativeStateUpdate> {

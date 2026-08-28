@@ -8,9 +8,11 @@ import json
 import re
 from typing import Any, Callable, Literal, Mapping, TypeVar, cast
 
+from .case_skills import get_case_skill_catalog, resolve_case_skill_context
 from .model import JsonModel
 from .prompts import (
     ADVERTISING_ANALYST_PROMPT,
+    CASE_SKILL_SELECTOR_PROMPT,
     CONFLICT_ANALYST_PROMPT,
     CREATIVE_PROMPT,
     CREATIVE_REPAIR_PROMPT,
@@ -487,6 +489,70 @@ class CreativeWorkflowNodes:
         )
 
     @immutable_full_state_node
+    def select_case_skills(self, state: SharedState) -> SharedState:
+        selection_mode = state["case_skill_context"]["selection_mode"]
+        if selection_mode == "disabled":
+            return rebuild_state(
+                state,
+                case_skill_context=resolve_case_skill_context(
+                    {}, selection_mode="disabled", stage="initial"
+                ),
+                current_stage="case_skills_disabled",
+                messages=_message(state, "case_skill_selector", "案例技能已禁用"),
+                metadata=_metadata(state, "case_skill_selector", model_call=False),
+            )
+
+        try:
+            result = self.model.generate_json(
+                task="select_case_skills",
+                system_prompt=CASE_SKILL_SELECTOR_PROMPT,
+                payload={
+                    "brief": state["brief"],
+                    "plan": state["plan"],
+                    "skill_catalog": get_case_skill_catalog("initial"),
+                    "selection_limit": 2,
+                },
+            )
+        except Exception as error:
+            return rebuild_state(
+                state,
+                case_skill_context=resolve_case_skill_context(
+                    {},
+                    selection_mode="auto",
+                    stage="initial",
+                ),
+                current_stage="case_skills_degraded",
+                messages=_message(
+                    state,
+                    "case_skill_selector",
+                    "案例技能选择暂不可用，已跳过案例参考",
+                ),
+                errors=[
+                    *state["errors"],
+                    f"case skill selector skipped: {type(error).__name__}",
+                ],
+                metadata=_metadata(state, "case_skill_selector", model_call=True),
+            )
+        context = resolve_case_skill_context(
+            result,
+            selection_mode="auto",
+            stage="initial",
+        )
+        selected_ids = [item["skill_id"] for item in context["selected"]]
+        summary = (
+            f"已选择案例技能：{', '.join(selected_ids)}"
+            if selected_ids
+            else "没有匹配的案例技能"
+        )
+        return rebuild_state(
+            state,
+            case_skill_context=context,
+            current_stage="case_skills_selected",
+            messages=_message(state, "case_skill_selector", summary),
+            metadata=_metadata(state, "case_skill_selector", model_call=True),
+        )
+
+    @immutable_full_state_node
     def subject_analyst(self, state: SharedState) -> SharedState:
         result = self.model.generate_json(
             task="subject_analysis",
@@ -514,6 +580,7 @@ class CreativeWorkflowNodes:
                 "brief": state["brief"],
                 "plan": state["plan"],
                 "subject_analysis": state["analyses"]["subject"],
+                "case_skill_context": state["case_skill_context"],
             },
         )
         analyses: CreativeAnalyses = {
@@ -533,7 +600,11 @@ class CreativeWorkflowNodes:
         result = self.model.generate_json(
             task="conflict_analysis",
             system_prompt=CONFLICT_ANALYST_PROMPT,
-            payload={"brief": state["brief"], "analyses": state["analyses"]},
+            payload={
+                "brief": state["brief"],
+                "analyses": state["analyses"],
+                "case_skill_context": state["case_skill_context"],
+            },
         )
         analyses: CreativeAnalyses = {
             **deepcopy(state["analyses"]),
@@ -552,7 +623,11 @@ class CreativeWorkflowNodes:
         result = self.model.generate_json(
             task="narrative_analysis",
             system_prompt=NARRATIVE_ANALYST_PROMPT,
-            payload={"brief": state["brief"], "analyses": state["analyses"]},
+            payload={
+                "brief": state["brief"],
+                "analyses": state["analyses"],
+                "case_skill_context": state["case_skill_context"],
+            },
         )
         analyses: CreativeAnalyses = {
             **deepcopy(state["analyses"]),
@@ -575,6 +650,7 @@ class CreativeWorkflowNodes:
                 "brief": state["brief"],
                 "plan": state["plan"],
                 "analyses": state["analyses"],
+                "case_skill_context": state["case_skill_context"],
                 "required_output": {
                     "story_blueprint": "StoryBlueprint",
                     "candidates": "exactly 6; two per category",
@@ -605,6 +681,7 @@ class CreativeWorkflowNodes:
                 "previous_draft": state["draft"],
                 "critique": state["critique"],
                 "repair_plan": state["repair_plan"],
+                "case_skill_context": state["case_skill_context"],
             },
         )
         draft = _draft(result, state["brief"])
@@ -643,6 +720,7 @@ class CreativeWorkflowNodes:
                 "draft": state["draft"],
                 "validation": state["validation"],
                 "iteration": state["iteration"],
+                "case_skill_context": state["case_skill_context"],
             },
         )
         critique = _critique(result)

@@ -18,5 +18,11 @@ creative-graph-agents = "creative_graph_agents.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+creative_graph_agents = [
+  "skills/**/*.md",
+  "skills/**/*.json",
+]
+
 [tool.unittest]
 start-directory = "tests"

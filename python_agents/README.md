@@ -2,6 +2,8 @@
 
 该子项目实现一条独立的首轮创意发散链路：多个分析 Agent 通过同一个完整 `SharedState` 交换结构化结果，随后由 Creative 统一生成 Story Blueprint 与三类候选，再由 Validator 和 Critic 进入最多两次的局部修复循环。
 
+首轮链路现在还包含可选的 Creative Case Skill Selector：Selector 只读取轻量案例目录，最多选择两个结构模式，再把对应 Few-shot 卡片写入 `state.case_skill_context`。案例只提供 Hook、冲突、结构、卖点植入和 CTA 的抽象参考，不是事实来源。
+
 在首轮结果之上，子项目还实现了受控节点生长：选择一个已采用节点，指定六种生长方向之一、生成类型和可选补充要求，生成三个具有独立 run 命名空间的新候选。生长结果存放在 `state.growth`，不会覆盖首轮六个候选。
 
 首轮 Story Blueprint 是候选内容的共同叙事假设，不是正式 Story。现在已实现正式 Story 收敛：候选全部决策完成后，只从 adopted 子图生成带节点溯源的 Story，并经过确定性 Validator、Critic 和 Beat 级 Repair。
@@ -34,6 +36,7 @@ LangGraph 1.2.10 的官方默认语义是：没有 reducer 的普通字段采用
 START
   -> normalize_brief
   -> supervisor
+  -> select_case_skills
   -> subject_analyst
   -> advertising_analyst
   -> conflict_analyst
@@ -53,6 +56,7 @@ START
 | 节点 | 写入 State 的主要结果 | 不负责 |
 |---|---|---|
 | Supervisor | 分析计划、上下文计划、风险 | 不生成候选 |
+| Case Skill Selector | 从轻量目录选择 0~2 个 Few-shot 案例模式 | 不生成节点、不把案例当事实 |
 | Subject Analyst | 主体、人物能动性、主体漂移风险 | 不生成正式人物节点 |
 | Advertising Analyst | 卖点、产品叙事功能、广告风险 | 不写 Story |
 | Conflict Analyst | 目标、阻碍、代价、升级路径 | 不生成正式冲突节点 |
@@ -70,6 +74,10 @@ python_agents/
 │  ├─ state.py       # SharedState、全部子结构和不可变重建
 │  ├─ model.py       # Mock / OpenAI-compatible JSON 模型
 │  ├─ prompts.py     # Agent Prompt
+│  ├─ case_skills.py # 案例技能目录加载、白名单解析和按需装载
+│  ├─ skills/creative-case-patterns/
+│  │  ├─ SKILL.md
+│  │  └─ references/cases.json
 │  ├─ nodes.py       # 独立业务节点、Validator 和条件路由
 │  ├─ workflow.py    # StateGraph 边和条件边
 │  ├─ growth_nodes.py      # 六方向生长、冲突校验和修复节点
@@ -115,6 +123,36 @@ creative-graph-agents --brief examples\brief.json
 - Critic 评分与问题
 - 最终状态 `ready_for_selection | needs_review | failed`
 
+默认自动选择案例技能。若调用方希望做无 Few-shot 对照实验，可在 Brief 中加入：
+
+```json
+{
+  "caseSkillMode": "disabled"
+}
+```
+
+自动模式的选择结果保存在完整共享 State：
+
+```json
+{
+  "case_skill_context": {
+    "catalog_version": "creative-case-patterns-v1",
+    "selection_mode": "auto",
+    "selected": [
+      {
+        "skill_id": "royal-water-battle",
+        "title": "身份规则化多人对战",
+        "reason": "Brief 命中多人游戏与身份反转模式",
+        "stages": ["initial", "growth"],
+        "example": {}
+      }
+    ]
+  }
+}
+```
+
+首轮分析、Creative、Repair、Critic 以及后续 Growth 可以读取所选模式；正式 Story 收敛不读取案例技能，只以 adopted 图谱为事实来源。
+
 需要查看完整共享 State：
 
 ```powershell
@@ -156,6 +194,9 @@ python -m unittest discover -s tests -v
 测试覆盖：
 
 - 初始 State 字段完整性
+- 案例技能目录只暴露轻量 metadata，完整卡片按选择加载
+- 非法 skill ID 与重复选择会被过滤，超过两个选择时确定性截断
+- `caseSkillMode=disabled` 不调用 Skill Selector 模型
 - 嵌套可变对象深拷贝
 - 未知 State 字段拒绝
 - 节点不修改旧 State

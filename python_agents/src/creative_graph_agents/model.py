@@ -162,6 +162,7 @@ class MockJsonModel:
         self.calls.append(task)
         handlers = {
             "supervisor_plan": self._supervisor,
+            "select_case_skills": self._select_case_skills,
             "subject_analysis": self._subject,
             "advertising_analysis": self._advertising,
             "conflict_analysis": self._conflict,
@@ -202,6 +203,40 @@ class MockJsonModel:
             "need_rag": False,
             "need_memory": False,
             "need_external_tool": False,
+        }
+
+    def _select_case_skills(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        brief_text = json.dumps(
+            deepcopy(dict(self._brief(payload))),
+            ensure_ascii=False,
+        ).lower()
+        raw_catalog = payload.get("skill_catalog", [])
+        catalog = raw_catalog if isinstance(raw_catalog, list) else []
+        ranked: list[tuple[int, str, str]] = []
+        for raw in catalog:
+            if not isinstance(raw, Mapping):
+                continue
+            skill_id = str(raw.get("skill_id", "")).strip()
+            if not skill_id:
+                continue
+            triggers = raw.get("triggers", [])
+            trigger_values = triggers if isinstance(triggers, list) else []
+            matched = [
+                str(item)
+                for item in trigger_values
+                if str(item).strip() and str(item).lower() in brief_text
+            ]
+            if matched:
+                ranked.append((len(matched), skill_id, "、".join(matched[:3])))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return {
+            "selected_skills": [
+                {
+                    "skill_id": skill_id,
+                    "reason": f"Brief 命中模式线索：{matched}",
+                }
+                for _, skill_id, matched in ranked[:2]
+            ]
         }
 
     def _subject(self, payload: Mapping[str, Any]) -> dict[str, Any]:

@@ -23,6 +23,7 @@ def build_first_round_graph(model: JsonModel):
 
     builder.add_node("normalize_brief", nodes.normalize_brief)
     builder.add_node("supervisor", nodes.supervisor)
+    builder.add_node("select_case_skills", nodes.select_case_skills)
     builder.add_node("subject_analyst", nodes.subject_analyst)
     builder.add_node("advertising_analyst", nodes.advertising_analyst)
     builder.add_node("conflict_analyst", nodes.conflict_analyst)
@@ -35,7 +36,8 @@ def build_first_round_graph(model: JsonModel):
 
     builder.add_edge(START, "normalize_brief")
     builder.add_conditional_edges("normalize_brief", route_after_normalize)
-    builder.add_edge("supervisor", "subject_analyst")
+    builder.add_edge("supervisor", "select_case_skills")
+    builder.add_edge("select_case_skills", "subject_analyst")
     builder.add_edge("subject_analyst", "advertising_analyst")
     builder.add_edge("advertising_analyst", "conflict_analyst")
     builder.add_edge("conflict_analyst", "narrative_analyst")
@@ -47,4 +49,3 @@ def build_first_round_graph(model: JsonModel):
     builder.add_edge("finalize", END)
 
     return builder.compile()
-

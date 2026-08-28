@@ -56,7 +56,9 @@ class WorkflowTests(unittest.TestCase):
             "motivation_conflict": 2,
             "story_event": 2,
         })
-        self.assertEqual(len(result["messages"]), 10)
+        self.assertEqual(len(result["messages"]), 11)
+        self.assertIn("select_case_skills", model.calls)
+        self.assertLessEqual(len(result["case_skill_context"]["selected"]), 2)
 
     def test_critic_failure_routes_through_one_repair_cycle(self) -> None:
         model = MockJsonModel(force_first_critique_failure=True)
@@ -93,4 +95,3 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

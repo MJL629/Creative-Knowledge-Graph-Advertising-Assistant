@@ -762,6 +762,7 @@ class GrowthWorkflowNodes:
                 "rejected_signatures": growth["context"]["rejected_signatures"],
                 "gap_analysis": growth["gap_analysis"],
                 "growth_plan": growth["plan"],
+                "case_skill_context": state["case_skill_context"],
                 "candidate_count": request["candidate_count"],
             },
         )
@@ -798,6 +799,7 @@ class GrowthWorkflowNodes:
                 "deterministic_validation": growth["validation"],
                 "critique": growth["critique"],
                 "repair_plan": growth["repair_plan"],
+                "case_skill_context": state["case_skill_context"],
                 "candidate_count": request["candidate_count"],
             },
         )
@@ -849,6 +851,7 @@ class GrowthWorkflowNodes:
                 "draft": growth["draft"],
                 "validation": growth["validation"],
                 "repair_iteration": growth["repair_iteration"],
+                "case_skill_context": state["case_skill_context"],
             },
         )
         critique = _growth_critique(result)
