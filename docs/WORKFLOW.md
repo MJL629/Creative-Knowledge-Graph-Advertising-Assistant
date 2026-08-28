@@ -11,7 +11,7 @@ The workflow is an explicit LangGraph `StateGraph`. It coordinates existing repo
 ## Flow
 
 ```text
-load project -> plan context -> optional retrieval -> intent router
+load project -> plan context -> optional explicit retrieval -> intent router
   start     -> divergence -> validate -> interrupt
   grow      -> growth     -> validate -> interrupt
   relations -> suggestion -> validate -> interrupt
@@ -39,3 +39,9 @@ The original `/api/graph/diverge`, `/grow`, `/relations`, and `/concept` contrac
 Local tests may use `MemorySaver`. Production requires the PostgreSQL checkpointer and keeps workflow execution state separate from business tables (`projects`, `graph_nodes`, `graph_edges`, and `story_versions`). The durable integration test recreates both repository and runtime, reloads the paused thread, and resumes without rerunning initial divergence.
 
 Model and retrieval calls emit best-effort traces keyed by `requestId`, `threadId`, and `projectId`. Trace persistence never blocks graph commits. Retrieval failure is recorded and routed through the non-RAG path without changing the confirmed graph.
+
+## Case Skill context
+
+Creative Case Skill is the default ideation-context mechanism. The Case Skill Selector reads a lightweight catalog, selects at most two trusted pattern IDs, and the resolver loads only those complete cards. The cards are optional structural references rather than facts. Selector failure degrades to an empty selection, while final Story convergence remains limited to the adopted graph.
+
+RAG is retained only as an explicit compatibility path through `needRag=true`; it is no longer enabled automatically when known facts are missing. See [CASE_SKILLS.md](CASE_SKILLS.md) for the data source, runtime flow, configuration, and extension rules.

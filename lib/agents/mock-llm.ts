@@ -19,6 +19,36 @@ export async function callMockJson<T>(messages: ChatMessage[]): Promise<T> {
   const system = messages[0]?.content || "";
   const user = messages[1]?.content || "";
 
+  // Creative Case Skill Selector：只看轻量目录，返回最多两个白名单 ID。
+  if (system.includes("Creative Case Skill Selector")) {
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(user) as Record<string, unknown>;
+    } catch {
+      return { selected_skills: [] } as T;
+    }
+    const catalog = Array.isArray(payload.skill_catalog) ? payload.skill_catalog : [];
+    const searchable = JSON.stringify({
+      brief: payload.brief,
+      task_context: payload.task_context,
+    }).toLowerCase();
+    const ranked = catalog
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      .map((item) => {
+        const triggers = Array.isArray(item.triggers) ? item.triggers.map(String) : [];
+        const matched = triggers.filter((trigger) => trigger && searchable.includes(trigger.toLowerCase()));
+        return { skillId: String(item.skill_id ?? ""), matched };
+      })
+      .filter((item) => item.skillId && item.matched.length)
+      .sort((left, right) => right.matched.length - left.matched.length || left.skillId.localeCompare(right.skillId))
+      .slice(0, 2)
+      .map((item) => ({
+        skill_id: item.skillId,
+        reason: `mock · 命中线索：${item.matched.slice(0, 3).join("、")}`,
+      }));
+    return { selected_skills: ranked } as T;
+  }
+
   // Supervisor Agent（首轮发散）
   if (system.includes("Supervisor Agent") && user.includes("首轮")) {
     return {

@@ -1,4 +1,9 @@
 import { callDeepSeekJson } from "./deepseek";
+import {
+  CASE_SKILL_USAGE_RULES,
+  selectCreativeCaseSkills,
+  type CaseSkillContext,
+} from "./case-skills";
 
 export type BriefInput = {
   product: string;
@@ -59,7 +64,7 @@ type StoryReadiness = {
 };
 
 export type AgentTrace = {
-  agent: "Supervisor" | "Creative" | "Critic" | "Story";
+  agent: "Supervisor" | "CaseSkillSelector" | "Creative" | "Critic" | "Story";
   status: "passed" | "repaired" | "waiting";
   summary: string;
 };
@@ -102,13 +107,13 @@ async function supervisorAgent(
   signal?: AbortSignal,
 ): Promise<SupervisorDecision> {
   const result = await callDeepSeekJson<Partial<SupervisorDecision>>([
-    { role: "system", content: `${sharedSystem}\n你是 Supervisor Agent，只做任务理解、状态判断和上下文规划，不生成创意节点。intent、stage、next_agent 已由路由层确定，你负责规划 context_plan、评估风险和判断是否需要 Memory/RAG/Tool。` },
+    { role: "system", content: `${sharedSystem}\n你是 Supervisor Agent，只做任务理解、状态判断和上下文规划，不生成创意节点。intent、stage、next_agent 已由路由层确定。案例参考由独立 Case Skill Selector 负责；你只规划 context_plan、评估风险和判断是否需要 Memory/Tool。` },
     { role: "user", content: JSON.stringify({
       task: taskSummary,
       brief,
       ...extraContext,
       fixed_route: { intent: route.intent, stage: route.stage, next_agent: route.next_agent, need_critic: true },
-      required_output: { need_memory: "boolean", need_rag: "boolean", need_external_tool: "boolean", need_user_confirmation: "boolean", context_plan: ["string"], risk_flags: ["string"] },
+      required_output: { need_memory: "boolean", need_external_tool: "boolean", need_user_confirmation: "boolean", context_plan: ["string"], risk_flags: ["string"] },
     }) },
   ], signal);
   return {
@@ -117,7 +122,7 @@ async function supervisorAgent(
     next_agent: route.next_agent,
     need_critic: true,
     need_memory: Boolean(result.need_memory),
-    need_rag: Boolean(result.need_rag),
+    need_rag: false,
     need_external_tool: Boolean(result.need_external_tool),
     need_user_confirmation: Boolean(result.need_user_confirmation),
     context_plan: Array.isArray(result.context_plan) && result.context_plan.length ? result.context_plan.map(String) : ["Global Brief", "must_keep / must_avoid", "平台与时长"],
@@ -125,12 +130,19 @@ async function supervisorAgent(
   };
 }
 
-async function creativeAgent(brief: BriefInput, decision: SupervisorDecision, repair?: { nodes: Candidate[]; issues: CriticResult["issues"] }, signal?: AbortSignal): Promise<Candidate[]> {
+async function creativeAgent(
+  brief: BriefInput,
+  decision: SupervisorDecision,
+  caseSkillContext: CaseSkillContext,
+  repair?: { nodes: Candidate[]; issues: CriticResult["issues"] },
+  signal?: AbortSignal,
+): Promise<Candidate[]> {
   const task = repair ? "局部修复候选" : "首轮发散";
   const prompt = {
     task,
     brief,
     context_plan: decision.context_plan,
+    case_skill_context: caseSkillContext,
     rules: [
       "只生成三个分类下的内容候选，每类正好 2 个，共 6 个",
       "创意元素应是人物、道具、场景、视觉符号或机制",
@@ -138,6 +150,7 @@ async function creativeAgent(brief: BriefInput, decision: SupervisorDecision, re
       "剧情事件必须包含参与者、触发、行动和结果",
       "不得输出 source、分类入口、ID、状态、父节点、坐标",
       "标题不超过 18 个汉字，不得重复或换词复述 must_avoid",
+      ...CASE_SKILL_USAGE_RULES,
     ],
     repair_input: repair || null,
     output: { nodes: [{ clientKey: "string", category: "creative_element | motivation_conflict | story_event", subtype: "string，可选", title: "string", description: "string", attributes: { key: "string 或 string[]" }, rationale: "string" }] },
@@ -149,10 +162,15 @@ async function creativeAgent(brief: BriefInput, decision: SupervisorDecision, re
   return result.nodes;
 }
 
-async function criticAgent(brief: BriefInput, nodes: Candidate[], signal?: AbortSignal): Promise<CriticResult> {
+async function criticAgent(
+  brief: BriefInput,
+  nodes: Candidate[],
+  caseSkillContext: CaseSkillContext,
+  signal?: AbortSignal,
+): Promise<CriticResult> {
   const result = await callDeepSeekJson<Partial<CriticResult> & { status?: string }>([
     { role: "system", content: `${sharedSystem}\n你是 Critic Agent，只做独立语义审查。不要重复字段、数量、ID 等确定性校验；重点检查偏题、隐性违反 must_avoid、语义重复、人物/冲突/事件矛盾和广告目标遗忘。` },
-    { role: "user", content: JSON.stringify({ review_mode: "candidate", brief, candidates: nodes, output: { pass: "boolean", issues: [{ clientKey: "string", severity: "warning | error", message: "string", repair_instruction: "string" }], summary: "string" } }) },
+    { role: "user", content: JSON.stringify({ review_mode: "candidate", brief, case_skill_context: caseSkillContext, cases_are_not_facts: true, candidates: nodes, output: { pass: "boolean", issues: [{ clientKey: "string", severity: "warning | error", message: "string", repair_instruction: "string" }], summary: "string" } }) },
   ], signal);
   const issues: CriticResult["issues"] = Array.isArray(result.issues) ? result.issues.filter((issue) => issue && typeof issue.clientKey === "string").map((issue) => ({
       clientKey: String(issue.clientKey),
@@ -202,26 +220,37 @@ export async function runInitialGraphPipeline(rawBrief: BriefInput, signal?: Abo
   const decision = await supervisorAgent(brief, { intent: "initial", stage: "exploration", next_agent: "creative" }, "根据新 Brief 生成首轮创意知识图谱", {}, signal);
   trace.push({ agent: "Supervisor", status: "passed", summary: `intent=initial → ${decision.next_agent}；${decision.context_plan.join("、")}` });
 
-  let nodes = await creativeAgent(brief, decision, undefined, signal);
+  const caseSkillContext = await selectCreativeCaseSkills({ stage: "initial", brief }, signal);
+  trace.push({
+    agent: "CaseSkillSelector",
+    status: caseSkillContext.warning ? "repaired" : "passed",
+    summary: caseSkillContext.warning
+      ? caseSkillContext.warning
+      : caseSkillContext.selected.length
+      ? `选择案例模式：${caseSkillContext.selected.map((item) => item.title).join("、")}`
+      : caseSkillContext.selectionMode === "disabled" ? "案例技能已禁用" : "无匹配案例模式",
+  });
+
+  let nodes = await creativeAgent(brief, decision, caseSkillContext, undefined, signal);
   let ruleErrors = validateCandidates(nodes);
   if (ruleErrors.length) throw new Error(`Rule Validator 未通过：${ruleErrors.join("；")}`);
   trace.push({ agent: "Creative", status: "passed", summary: "生成三类各 2 个结构化候选" });
 
-  let critic = await criticAgent(brief, nodes, signal);
+  let critic = await criticAgent(brief, nodes, caseSkillContext, signal);
   let repairs = 0;
   while (!critic.pass && repairs < 2) {
-    nodes = await creativeAgent(brief, decision, { nodes, issues: critic.issues }, signal);
+    nodes = await creativeAgent(brief, decision, caseSkillContext, { nodes, issues: critic.issues }, signal);
     ruleErrors = validateCandidates(nodes);
     if (ruleErrors.length) throw new Error(`Repair 后 Rule Validator 未通过：${ruleErrors.join("；")}`);
     repairs += 1;
-    critic = await criticAgent(brief, nodes, signal);
+    critic = await criticAgent(brief, nodes, caseSkillContext, signal);
   }
   trace.push({ agent: "Critic", status: repairs ? "repaired" : "passed", summary: critic.pass ? `语义审查通过${repairs ? `，局部修复 ${repairs} 次` : ""}` : `达到修复上限：${critic.summary}` });
 
   const readiness = await storyAgent(brief, nodes, signal);
   trace.push({ agent: "Story", status: "waiting", summary: `${readiness.status} · ${readiness.score} 分；等待用户采用后再收敛` });
 
-  return { brief, decision, candidates: nodes, critic, readiness, trace, repairCount: repairs };
+  return { brief, decision, caseSkillContext, candidates: nodes, critic, readiness, trace, repairCount: repairs };
 }
 
 // ─── 关系推荐 pipeline（对应 PRD POST /api/graph/relations）──────────────────

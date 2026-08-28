@@ -26,7 +26,7 @@ type Node = {
 };
 type GrowthMode = "deepen" | "next_event" | "add_conflict" | "add_element" | "twist" | "parallel";
 type Edge = { id: string; source: string; target: string; label: string; type: string; direction?: "forward" | "reverse" | "both"; status?: "pending" | "adopted" | "excluded" };
-type AgentTrace = { agent: "Supervisor" | "Creative" | "Critic" | "Story"; status: "passed" | "repaired" | "waiting"; summary: string };
+type AgentTrace = { agent: "Supervisor" | "CaseSkillSelector" | "Creative" | "Critic" | "Story"; status: "passed" | "repaired" | "waiting"; summary: string };
 type StoryConcept = {
   concept: string;
   theme: string;
@@ -563,13 +563,13 @@ export default function Home() {
     setIsGenerating(true);
     setGenerationError("");
     setAgentTrace([]);
-    setRequest("四 Agent 编排运行中…");
+    setRequest("核心 Agent + Case Skill 编排运行中…");
     try {
       // A new divergence is a new graph session. Reusing the previous project
       // leaves its persisted nodes behind; the first status commit would then
       // reload those stale nodes and make it look as if "采用" generated them.
       const activeProjectId = await ensureProject(true);
-      const workflow = await startWorkflow({ projectId: activeProjectId, intent: "start", needRag: true });
+      const workflow = await startWorkflow({ projectId: activeProjectId, intent: "start", needRag: false });
       const result = workflow.candidateResult as { candidates: DivergenceCandidate[]; trace?: AgentTrace[]; repairCount: number };
       if (!result?.candidates?.length) throw new Error("Workflow 未返回候选");
 
@@ -855,7 +855,7 @@ export default function Home() {
     const featureRefs = sellingPoints.split(/[，、；;\n]/).map((value) => value.trim()).filter(Boolean);
     setIsGrowing(true);
     setGrowthError("");
-    setRequest(`graph.grow.v2 · ${modeMeta?.label} · 四 Agent 运行中`);
+    setRequest(`graph.grow.v2 · ${modeMeta?.label} · 核心 Agent + Case Skill 运行中`);
     try {
       // A candidate exists only in browser state until its paused workflow is
       // resumed. Materialize it before a new workflow tries to load it by ID.
@@ -865,7 +865,7 @@ export default function Home() {
       const workflow = await startWorkflow({
         intent: "grow",
         focusNodeId: parent.id,
-        needRag: true,
+        needRag: false,
         growthMode,
         targetCategory: category,
         candidateCount: growthCount,
@@ -1115,7 +1115,7 @@ export default function Home() {
             <button key={key} className={stage === key ? "step active" : "step"} onClick={() => setStage(key as typeof stage)}><b>{num}</b>{label}</button>
           ))}
         </div>
-        <div className="system-pill"><span /> AI 已就绪 · rev {revision}</div>
+        <div className="system-pill"><span /> DeepSeek · 4 Core Agents + Skill · rev {revision}</div>
       </header>
 
       {stage === "brief" && <section className="brief-page">
@@ -1147,7 +1147,7 @@ export default function Home() {
             <label>产品卖点<input value={sellingPoints} onChange={(e) => setSellingPoints(e.target.value)} /></label>
           </div>}
           {generationError && <p className="generation-error">{generationError}</p>}
-          <div className="form-actions"><button className="secondary" type="button" onClick={() => { setProduct(""); setKnownInformation(""); setIdeas([""]); }}>清空内容</button><button className="primary" onClick={runInitialGeneration} disabled={!product.trim() || !hasRequiredIdea || isGenerating}>{isGenerating ? "AI 正在发散…" : "开始发散"} <b>{isGenerating ? "···" : "→"}</b></button></div>
+          <div className="form-actions"><button className="secondary" type="button" onClick={() => { setProduct(""); setKnownInformation(""); setIdeas([""]); }}>清空内容</button><button className="primary" onClick={runInitialGeneration} disabled={!product.trim() || !hasRequiredIdea || isGenerating}>{isGenerating ? "核心 Agent 与 Case Skill 正在协作…" : "生成首轮创意图谱"} <b>{isGenerating ? "···" : "→"}</b></button></div>
           <p className="microcopy">将创建 3 个固定分类，并生成每类 2 个结构化候选节点</p>
         </div>
       </section>}
@@ -1163,11 +1163,12 @@ export default function Home() {
             <div className="arch-step"><b>00</b><div><strong>Brief Normalizer</strong><small>Global Brief / Constraints</small></div><i>↓</i></div>
             {(agentTrace.length ? agentTrace : [
               { agent: "Supervisor", status: "waiting", summary: "任务理解与路由" },
+              { agent: "CaseSkillSelector", status: "waiting", summary: "按需选择最多两个案例模式" },
               { agent: "Creative", status: "waiting", summary: "三类候选生成" },
               { agent: "Critic", status: "waiting", summary: "语义审查与局部 Repair" },
               { agent: "Story", status: "waiting", summary: "可叙事准备度检查" },
-            ] as AgentTrace[]).map((item, index) => <div className={`arch-step agent-${item.status}`} key={item.agent}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{item.agent} Agent</strong><small>{item.summary}</small></div>{index < 3 && <i>↓</i>}</div>)}
-            <div className="arch-step"><b>05</b><div><strong>Validator + Commit</strong><small>{request} · graphRevision {revision}</small></div></div>
+            ] as AgentTrace[]).map((item, index) => <div className={`arch-step agent-${item.status}`} key={item.agent}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{item.agent} Agent</strong><small>{item.summary}</small></div>{index < 4 && <i>↓</i>}</div>)}
+            <div className="arch-step"><b>06</b><div><strong>Validator + Commit</strong><small>{request} · graphRevision {revision}</small></div></div>
             <div className="fact-box"><strong>事实边界</strong><p>AI 只生成候选；采用、删除、关系保存和版本更新由确定性业务代码执行。</p></div>
           </aside>
 
@@ -1305,7 +1306,7 @@ export default function Home() {
                 <div className="growth-modes">{growthModes.map((mode) => <button key={mode.id} className={growthMode === mode.id ? "active" : ""} onClick={() => { setGrowthMode(mode.id); if (mode.category) setGrowthCategory(mode.category); }}><strong>{mode.label}</strong><small>{mode.hint}</small></button>)}</div>
                 {!growthModes.find((mode) => mode.id === growthMode)?.category && <div className="category-picker"><span>生成类型</span>{(Object.keys(categoryMeta) as Category[]).map((category) => <button key={category} className={growthCategory === category ? "active" : ""} onClick={() => setGrowthCategory(category)}>{categoryMeta[category].label}</button>)}</div>}
                 <label className="growth-instruction">补充要求（可选）<textarea value={growthInstruction} onChange={(event) => setGrowthInstruction(event.target.value)} placeholder="例如：保持轻松荒诞，不增加新主角" /></label>
-                <div className="growth-footer"><div><span>候选数量</span><button disabled={isGrowing} className={growthCount === 2 ? "active" : ""} onClick={() => setGrowthCount(2)}>2</button><button disabled={isGrowing} className={growthCount === 3 ? "active" : ""} onClick={() => setGrowthCount(3)}>3</button></div><button disabled={isGrowing} className="generate-growth" onClick={() => executeGrowth(selected)}>{isGrowing ? "四 Agent 生成中…" : "生成候选 →"}</button></div>
+                <div className="growth-footer"><div><span>候选数量</span><button disabled={isGrowing} className={growthCount === 2 ? "active" : ""} onClick={() => setGrowthCount(2)}>2</button><button disabled={isGrowing} className={growthCount === 3 ? "active" : ""} onClick={() => setGrowthCount(3)}>3</button></div><button disabled={isGrowing} className="generate-growth" onClick={() => executeGrowth(selected)}>{isGrowing ? "核心 Agent + Skill 生成中…" : "生成候选 →"}</button></div>
                 <div className="guard-row"><span>✓ Global Brief</span><span>✓ 主体契约</span><span>✓ 已采用邻域</span><span>✓ 排除记忆</span></div>
                 {growthError && <p className="growth-error">{growthError}</p>}
               </section>}

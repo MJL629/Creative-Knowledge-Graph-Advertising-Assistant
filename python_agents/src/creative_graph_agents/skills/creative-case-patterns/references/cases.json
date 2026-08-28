@@ -1,0 +1,213 @@
+{
+  "catalog_version": "creative-case-patterns-v1",
+  "skills": [
+    {
+      "skill_id": "royal-water-battle",
+      "title": "身份规则化多人对战",
+      "description": "把身份符号变成多人玩法规则，用挑战结果推动轻喜剧事件。",
+      "triggers": ["多人游戏", "水枪", "国王", "权杖", "挑战", "荒诞反转"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "熟悉的身份符号被改造成可操作的游戏规则",
+        "creative_elements": ["具有身份含义的功能道具", "公开可见的挑战规则", "轻量失败反馈"],
+        "conflict_pattern": "主体想维持权威或完成挑战，但规则迫使其亲自参与",
+        "story_pattern": "身份亮相—规则公布—多人对战—身份反转—轻松收束",
+        "selling_point_pattern": "卖点必须直接决定对战方式、反馈或多人互动结果",
+        "cta_pattern": "邀请观众选择阵营或提出下一轮规则",
+        "do_not_copy": ["具体人物名称", "原案例道具名称", "透明水球惩罚的原句"]
+      }
+    },
+    {
+      "skill_id": "countdown-challenge",
+      "title": "倒计时即时挑战",
+      "description": "用明确倒计时和可视反馈快速证明产品体验。",
+      "triggers": ["饮料", "即时反馈", "挑战", "倒计时", "快节奏", "感官展示"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "先给出很短的时间限制和可验证目标",
+        "creative_elements": ["倒计时视觉", "状态变化反馈", "关键动作声效"],
+        "conflict_pattern": "主体必须在时间耗尽前完成可观察任务",
+        "story_pattern": "挑战提出—即时执行—状态变化—结果揭晓",
+        "selling_point_pattern": "让卖点成为完成挑战或产生反馈的机制",
+        "cta_pattern": "邀请观众复刻或预测结果",
+        "do_not_copy": ["具体秒数", "具体饮品", "原案例文案"]
+      }
+    },
+    {
+      "skill_id": "split-screen-comparison",
+      "title": "分屏对照实验",
+      "description": "把使用差异转化为同步、可观察的对照过程。",
+      "triggers": ["护肤", "教程", "对照", "分屏", "步骤", "小红书"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "同一主体或场景同时出现两个处理路径",
+        "creative_elements": ["同步分屏", "步骤标签", "局部细节镜头"],
+        "conflict_pattern": "两种方法都声称有效，需要通过过程差异做判断",
+        "story_pattern": "提出疑问—同步操作—关键差异—结论总结",
+        "selling_point_pattern": "通过操作步骤和可见结果表达产品价值",
+        "cta_pattern": "引导收藏步骤或选择方案",
+        "do_not_copy": ["左右脸设定", "具体护肤步骤", "原案例结论"]
+      }
+    },
+    {
+      "skill_id": "underdog-reversal",
+      "title": "弱者机制翻盘",
+      "description": "让被低估的主体依靠理解规则而不是外力完成反转。",
+      "triggers": ["游戏", "新手", "失败", "翻盘", "反转", "机制"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "先展示看似无法挽回的失败结果",
+        "creative_elements": ["失败记录", "被忽视的规则线索", "群体反应"],
+        "conflict_pattern": "主体需要在他人失去信心前证明自己的判断",
+        "story_pattern": "连续受挫—发现机制—主动尝试—最后翻盘",
+        "selling_point_pattern": "让产品机制成为可理解、可学习的翻盘条件",
+        "cta_pattern": "邀请分享类似经历或猜测隐藏机制",
+        "do_not_copy": ["具体游戏回合", "队友关系", "原案例隐藏机制"]
+      }
+    },
+    {
+      "skill_id": "limited-capacity-choice",
+      "title": "有限容量取舍",
+      "description": "通过空间、时间或数量限制展示选择过程和产品能力。",
+      "triggers": ["旅行", "箱包", "收纳", "容量", "清单", "限制条件"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "宣布一个清晰且真实的容量或数量限制",
+        "creative_elements": ["俯拍清单", "容量刻度", "取舍标记"],
+        "conflict_pattern": "主体需要在资源有限和需求完整之间做选择",
+        "story_pattern": "提出限制—逐项取舍—意外难题—完成目标",
+        "selling_point_pattern": "在选择与装载过程中自然展示结构和容量",
+        "cta_pattern": "让观众补充或删减清单",
+        "do_not_copy": ["一个背包", "周末旅行", "原案例物品清单"]
+      }
+    },
+    {
+      "skill_id": "sensory-before-after",
+      "title": "感官前后切换",
+      "description": "先建立强烈不适，再通过声音或画面切换表现体验变化。",
+      "triggers": ["耳机", "降噪", "通勤", "声音", "体验对比", "主观镜头"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "用声音或画面先让观众直接感受到问题",
+        "creative_elements": ["主观镜头", "感官层次切换", "环境反差"],
+        "conflict_pattern": "主体受到环境干扰，难以完成当前行动",
+        "story_pattern": "问题压迫—产品介入—感官切换—行动恢复",
+        "selling_point_pattern": "用体验变化而不是口播证明功能",
+        "cta_pattern": "邀请观众描述最想屏蔽或改善的场景",
+        "do_not_copy": ["地铁场景", "戴耳机动作", "原案例声效顺序"]
+      }
+    },
+    {
+      "skill_id": "reverse-process-reveal",
+      "title": "结果倒放还原",
+      "description": "先给结果，再通过倒放或逆向拆解制造过程悬念。",
+      "triggers": ["美食", "教程", "倒放", "悬念", "过程", "步骤"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "先展示不完整或反常的最终结果",
+        "creative_elements": ["倒放动作", "步骤字幕", "关键过程特写"],
+        "conflict_pattern": "观众和主体都需要还原结果是如何发生的",
+        "story_pattern": "结果出现—逆向还原—关键步骤—正序验证",
+        "selling_point_pattern": "产品只在决定结果的关键步骤出现",
+        "cta_pattern": "引导保存步骤或尝试复现",
+        "do_not_copy": ["空盘", "具体菜品", "原案例倒放镜头"]
+      }
+    },
+    {
+      "skill_id": "unusual-point-of-view",
+      "title": "非常规主体视角",
+      "description": "通过低机位、物品或非典型观察者重构熟悉场景。",
+      "triggers": ["宠物", "第一视角", "探索", "低机位", "路径", "发现"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "先隐藏观察者身份，让视角本身成为谜题",
+        "creative_elements": ["特定高度镜头", "路径线索", "局部感官反馈"],
+        "conflict_pattern": "视角主体必须穿过环境障碍寻找目标",
+        "story_pattern": "发现线索—路径探索—遇到障碍—找到目标",
+        "selling_point_pattern": "产品成为探索目标或行动反馈，而不是静态摆设",
+        "cta_pattern": "邀请观众猜测视角身份或下一条路径",
+        "do_not_copy": ["宠物晚餐", "气味路径", "原案例家庭空间"]
+      }
+    },
+    {
+      "skill_id": "transformation-before-after",
+      "title": "空间状态改造",
+      "description": "固定参照系展示从混乱到有序或从普通到完成的变化。",
+      "triggers": ["收纳", "改造", "前后对比", "空间", "快速转场", "整理"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "先用固定视角完整展示问题状态",
+        "creative_elements": ["固定机位", "匹配转场", "分类标签"],
+        "conflict_pattern": "主体需要在有限空间或时间内完成状态改变",
+        "story_pattern": "问题全景—分步行动—意外卡点—成果对照",
+        "selling_point_pattern": "通过状态变化证明产品对过程的实际作用",
+        "cta_pattern": "邀请观众选择下一个改造目标",
+        "do_not_copy": ["十秒书桌", "具体转场手势", "原案例分类方式"]
+      }
+    },
+    {
+      "skill_id": "audience-choice-branch",
+      "title": "观众选择分支",
+      "description": "用有限选项让观众决定下一步并形成可继续生长的支线。",
+      "triggers": ["互动", "选择题", "评论", "学习", "旅行", "平行方案"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "先设置只能选择少数选项的限制",
+        "creative_elements": ["选项卡", "具体使用场景", "即时结果反馈"],
+        "conflict_pattern": "主体必须在有限选择中决定最优行动",
+        "story_pattern": "设置限制—展示选项—执行选择—留下下一分支",
+        "selling_point_pattern": "产品能力体现在不同选项的执行结果中",
+        "cta_pattern": "让评论结果决定后续内容",
+        "do_not_copy": ["三句话", "具体旅行语言", "原案例选项"]
+      }
+    },
+    {
+      "skill_id": "seamless-routine-loop",
+      "title": "动作闭环循环",
+      "description": "用首尾衔接的动作把产品步骤嵌入生活节奏。",
+      "triggers": ["咖啡", "晨间", "仪式感", "循环", "生活方式", "转场"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "首个动作同时也是结尾回到起点的接口",
+        "creative_elements": ["动作匹配转场", "重复视觉元素", "节奏音效"],
+        "conflict_pattern": "主体需要在固定节奏中顺利完成一组动作",
+        "story_pattern": "准备—连续动作—状态完成—无缝回到开头",
+        "selling_point_pattern": "产品操作步骤构成循环不可缺少的一环",
+        "cta_pattern": "引导重复观看或模仿动作衔接",
+        "do_not_copy": ["咖啡研磨", "出门动作", "原案例晨光氛围"]
+      }
+    },
+    {
+      "skill_id": "information-gap-mystery",
+      "title": "信息缺口猜谜",
+      "description": "隐藏核心答案，逐步释放可验证线索驱动停留和互动。",
+      "triggers": ["图书", "悬念", "猜测", "线索", "揭晓", "信息缺口"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "遮住观众最想知道的核心信息",
+        "creative_elements": ["线索卡", "局部展示", "递进提示"],
+        "conflict_pattern": "主体或观众需要在信息不足时作出判断",
+        "story_pattern": "隐藏答案—释放线索—错误猜测—最终揭晓",
+        "selling_point_pattern": "产品特征被拆成真实且可推理的线索",
+        "cta_pattern": "在揭晓前邀请留言猜测",
+        "do_not_copy": ["遮挡书名", "三条线索", "原案例封面表现"]
+      }
+    },
+    {
+      "skill_id": "micro-goal-streak",
+      "title": "低门槛连续目标",
+      "description": "把高阻力目标缩小为可完成单元，通过连续记录形成推进感。",
+      "triggers": ["健身", "打卡", "微习惯", "职场人", "坚持", "低门槛"],
+      "stages": ["initial", "growth"],
+      "example": {
+        "hook_pattern": "公开承认阻力，并提出小得难以拒绝的行动",
+        "creative_elements": ["短时计时", "连续记录", "动作完成反馈"],
+        "conflict_pattern": "主体想改变状态，但完整目标带来的压力阻止开始",
+        "story_pattern": "承认阻力—完成微目标—连续积累—获得正反馈",
+        "selling_point_pattern": "产品把复杂目标拆成可以立即完成的单元",
+        "cta_pattern": "邀请从今天完成第一个最小行动",
+        "do_not_copy": ["五分钟", "具体健身动作", "原案例打卡天数"]
+      }
+    }
+  ]
+}

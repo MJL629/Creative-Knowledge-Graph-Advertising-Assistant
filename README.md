@@ -2,7 +2,7 @@
 
 这是一个用于验证“从碎片 Brief 到可追溯短视频广告创意”的全栈 Demo。
 
-系统使用 DeepSeek 的 OpenAI-compatible API，通过四个 Agent 将用户输入转成结构化创意知识图谱；用户可以采用、排除、继续生长节点并建立语义关系，最后从已采用子图收敛为剧情草案。
+系统使用 DeepSeek 的 OpenAI-compatible API，通过四个核心 Agent 和一个可选 Case Skill Selector 将用户输入转成结构化创意知识图谱；用户可以采用、排除、继续生长节点并建立语义关系，最后从已采用子图收敛为剧情草案。
 
 > 支持 `mock` / `deepseek` 双模式。Project、Graph、Story 和暂停的 Workflow 由服务端 Repository/Checkpoint 持久化；localStorage 只保留当前项目 ID 指针。
 
@@ -14,7 +14,7 @@
 
 - 结构化 Creative Brief：推广对象、已知信息、动态碎片想法、必须保留、禁止内容和高级约束。
 - 首轮图谱生成：三个固定分类，每类生成两个候选节点。
-- 四 Agent 协作：Supervisor、Creative、Critic、Story；Supervisor 输出 Structured Decision（intent: initial/grow/relation/converge，技术设计 4.1）。
+- 四个核心 Agent 协作：Supervisor、Creative、Critic、Story；可选 Case Skill Selector 最多选择两个 Few-shot 结构模式，不提供事实。
 - 候选治理：用户采用、排除或恢复节点，AI 不能直接写入正式事实。
 - 节点编辑：名称、描述、子类型可直接编辑保存（FR-04）。
 - 需复核传播：编辑已采用节点后，其语义关系邻居标记为「需复核」，确认前不进入最终剧情（FR-12 / PRD 5.2）。
@@ -58,11 +58,12 @@ flowchart LR
     I --> K[剧情收敛]
 ```
 
-### 四个 Agent 的职责
+### 四个核心 Agent 与 Case Skill Selector 的职责
 
 | Agent | 职责 | 不负责 |
 |---|---|---|
 | Supervisor | 理解任务、判断意图、规划上下文 | 不生成创意节点 |
+| Case Skill Selector | 从轻量目录选择 0～2 个结构参考 | 不生成节点、不提供事实 |
 | Creative | 生成结构化候选或执行局部 Repair | 不写数据库 ID、状态和坐标 |
 | Critic | 检查偏题、重复、主体漂移、禁用内容和广告目标遗忘 | 不替代确定性字段校验 |
 | Story | 评估叙事准备度 | 候选阶段不直接生成正式故事 |
@@ -118,6 +119,7 @@ prd-architecture-demo/
 ├─ lib/agents/
 │  ├─ deepseek.ts                  # 统一 LLM 入口（mock/deepseek 路由）
 │  ├─ mock-llm.ts                  # mock 适配器（离线演示，PRD 9.1）
+│  ├─ case-skills.ts               # 案例技能选择、白名单解析和降级
 │  ├─ graph-pipeline.ts            # 首轮四 Agent + 关系推荐 + 剧情收敛
 │  └─ growth-pipeline.ts           # 生长四 Agent 流程
 ├─ lib/workflow/                   # LangGraph StateGraph、HITL、durable checkpoint
@@ -220,7 +222,11 @@ npm test
 - 没有账号级项目管理、多人协作、审计记录和限流。
 - mock 模式返回固定候选，仅用于流程演示，不代表真实模型质量。
 
-完整的数据库、工作流、测试与生产配置见 [docs/SETUP.md](docs/SETUP.md)、[docs/DATABASE.md](docs/DATABASE.md) 和 [docs/WORKFLOW.md](docs/WORKFLOW.md)。
+完整的数据库、工作流、Case Skill、测试与生产配置见 [docs/SETUP.md](docs/SETUP.md)、[docs/DATABASE.md](docs/DATABASE.md)、[docs/WORKFLOW.md](docs/WORKFLOW.md) 和 [docs/CASE_SKILLS.md](docs/CASE_SKILLS.md)。
+
+## Python 多 Agent 首轮与生长工作流
+
+`python_agents/` 提供一套独立的 LangGraph Python 实现，用统一完整 `SharedState` 串联首轮 Supervisor、多视角分析、Creative、Validator、Critic，以及六方向节点生长和 Repair Loop。首轮六个候选与生长候选使用隔离的 State 区域和 ID 命名空间；该实现严格禁止节点原地修改 State 或只返回局部补丁，详情见 [python_agents/README.md](python_agents/README.md)。
 
 ## 交接注意事项
 
