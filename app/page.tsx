@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ApiError,
   commitGraph as apiCommitGraph,
@@ -137,6 +137,15 @@ const categoryMeta: Record<Category, { label: string; color: string; x: number }
   story_event: { label: "剧情事件", color: "#29a38d", x: 750 },
 };
 
+const INITIAL_SOURCE_POSITION = { x: 400, y: 20 };
+const INITIAL_CATEGORY_POSITIONS: Record<Category, { x: number; y: number }> = {
+  creative_element: { x: 102, y: 130 },
+  motivation_conflict: { x: 402, y: 130 },
+  story_event: { x: 702, y: 130 },
+};
+const INITIAL_PAN_OFFSET = { x: 0, y: 0 };
+const SYSTEM_LAYOUT_KEY = "creative-graph-system-layout-v1";
+
 const growthModes: Array<{ id: GrowthMode; label: string; hint: string; category?: Category }> = [
   { id: "deepen", label: "深化当前节点", hint: "补足细节，不改变核心含义" },
   { id: "next_event", label: "生成后续事件", hint: "让主体继续行动", category: "story_event" },
@@ -220,10 +229,6 @@ export default function Home() {
   const [generationError, setGenerationError] = useState("");
   const hasRequiredIdea = ideas.some((value) => value.trim());
 
-  // 节点编辑状态（FR-04）
-  const [editingNode, setEditingNode] = useState(false);
-  const [editDraft, setEditDraft] = useState({ title: "", description: "", subtype: "" });
-
   // 删除确认状态（FR-09）
   const [deleteConfirm, setDeleteConfirm] = useState<{ nodeId: string; nodeTitle: string; descendantCount: number } | null>(null);
 
@@ -245,20 +250,99 @@ export default function Home() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [edgeMode, setEdgeMode] = useState<"all" | "hierarchy" | "semantic">("all");
+  const [layoutMode, setLayoutMode] = useState<"free" | "hierarchy">("free");
   const [selectedGrowIds, setSelectedGrowIds] = useState<string[]>([]);
   const [adoptingAll, setAdoptingAll] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiDiff, setAiDiff] = useState<{ before: unknown; after: unknown; changes: unknown[] } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [sourceNodePos, setSourceNodePos] = useState(() => {
+    if (typeof window === "undefined") return INITIAL_SOURCE_POSITION;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SYSTEM_LAYOUT_KEY) ?? "null") as { source?: { x: number; y: number } };
+      return parsed.source ?? INITIAL_SOURCE_POSITION;
+    } catch {
+      return INITIAL_SOURCE_POSITION;
+    }
+  });
+  const [categoryNodePos, setCategoryNodePos] = useState(() => {
+    if (typeof window === "undefined") return INITIAL_CATEGORY_POSITIONS;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SYSTEM_LAYOUT_KEY) ?? "null") as { categories?: Partial<Record<Category, { x: number; y: number }>> };
+      return { ...INITIAL_CATEGORY_POSITIONS, ...parsed.categories };
+    } catch {
+      return INITIAL_CATEGORY_POSITIONS;
+    }
+  });
+  const [panOffset, setPanOffset] = useState(() => {
+    if (typeof window === "undefined") return INITIAL_PAN_OFFSET;
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SYSTEM_LAYOUT_KEY) ?? "null") as { pan?: { x: number; y: number } };
+      return parsed.pan ?? INITIAL_PAN_OFFSET;
+    } catch {
+      return INITIAL_PAN_OFFSET;
+    }
+  });
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [panning, setPanning] = useState(false);
 
   // 节点拖拽（FR-03 自由布局基础版）
   const [dragState, setDragState] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
   const movedRef = useRef(false);
+  const nodesRef = useRef<Node[]>([]);
+  const pendingCandidateIdsRef = useRef<Set<string>>(new Set());
+  const spacePressedRef = useRef(false);
+  const panDragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const workflowThreadIdRef = useRef<string | null>(null);
+  const relationLoadRef = useRef<Promise<void> | null>(null);
+  const relationLoadTokenRef = useRef(0);
 
   // localStorage 只保存服务端项目指针；Project/Graph/Story 的唯一事实源是 API。
   const SESSION_KEY = "creative-graph-project-v2";
   const THREAD_KEY = "creative-graph-thread-v2";
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+  useEffect(() => {
+    pendingCandidateIdsRef.current = pendingCandidateIds;
+  }, [pendingCandidateIds]);
+  useEffect(() => {
+    localStorage.setItem(SYSTEM_LAYOUT_KEY, JSON.stringify({ source: sourceNodePos, categories: categoryNodePos, pan: panOffset }));
+  }, [sourceNodePos, categoryNodePos, panOffset]);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      if (!event.repeat) {
+        spacePressedRef.current = true;
+        setSpacePressed(true);
+      }
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space") return;
+      spacePressedRef.current = false;
+      setSpacePressed(false);
+      panDragRef.current = null;
+      setPanning(false);
+    };
+    const handleBlur = () => {
+      spacePressedRef.current = false;
+      setSpacePressed(false);
+      panDragRef.current = null;
+      setPanning(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
   useEffect(() => {
     const savedProjectId = localStorage.getItem(SESSION_KEY);
     if (!savedProjectId) return;
@@ -295,6 +379,7 @@ export default function Home() {
           const workflowState = await getWorkflowThread(savedThreadId);
           if (workflowState.next.length) {
             setWorkflowThreadId(savedThreadId);
+            workflowThreadIdRef.current = savedThreadId;
             const state = workflowState;
             if (state.intent === "start") {
               const result = state.candidateResult as { candidates?: DivergenceCandidate[] };
@@ -382,6 +467,7 @@ export default function Home() {
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(THREAD_KEY);
     setWorkflowThreadId(null);
+    workflowThreadIdRef.current = null;
     setNodes([]);
     setEdges([]);
     setRevision(0);
@@ -470,7 +556,14 @@ export default function Home() {
   }, [nodes, searchText]);
 
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const visibleHierarchyEdges = nodes.filter((node) => node.parentId && visibleNodeIds.has(node.id) && visibleNodeIds.has(node.parentId));
+  const visibleHierarchyEdges = nodes
+    .filter((node) => visibleNodeIds.has(node.id))
+    .map((node) => ({
+      id: `h-${node.parentId ?? `system-category-${node.category}`}-${node.id}`,
+      sourceId: node.parentId ?? `system-category-${node.category}`,
+      targetId: node.id,
+    }))
+    .filter((edge) => edge.sourceId.startsWith("system-category-") || visibleNodeIds.has(edge.sourceId));
   const visibleSemanticEdges = edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target));
 
   const story = useMemo(() => {
@@ -589,11 +682,38 @@ export default function Home() {
         adoptedEdges,
       });
       setAiDiff(diff);
-    } catch {
-      setAiError("AI 微调服务尚未接入：技术同学按 docs/STORY_REVISE_CONTRACT.md 实现 /api/story/revise 后即可使用。");
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "AI 微调失败，请稍后重试");
     } finally {
       setAiLoading(false);
     }
+  }
+
+  function applyAiDiff(acceptAll: boolean) {
+    if (!aiDiff) return;
+    if (acceptAll || !Array.isArray(aiDiff.changes) || !aiDiff.changes.length) {
+      setStoryConcept(aiDiff.after as StoryConcept);
+    } else {
+      const first = aiDiff.changes[0] as { path?: string; after?: unknown };
+      const changePath = first?.path;
+      if (changePath) {
+        setStoryConcept((current) => {
+          if (!current) return current;
+          const next = structuredClone(current) as Record<string, unknown>;
+          const parts = changePath.split(/[./[\]]+/).filter(Boolean);
+          let cursor: Record<string, unknown> = next;
+          for (let index = 0; index < parts.length - 1; index += 1) {
+            const part = parts[index];
+            if (!cursor[part] || typeof cursor[part] !== "object") cursor[part] = {};
+            cursor = cursor[part] as Record<string, unknown>;
+          }
+          if (parts.length) cursor[parts[parts.length - 1]] = first.after;
+          return next as unknown as StoryConcept;
+        });
+      }
+    }
+    setAiDiff(null);
+    setAiPrompt("");
   }
 
   function currentBrief() {
@@ -617,6 +737,8 @@ export default function Home() {
     setNodes(graph.nodes);
     setEdges(graph.edges);
     setRevision(graph.revision);
+    nodesRef.current = graph.nodes;
+    pendingCandidateIdsRef.current = new Set();
   }
 
   async function ensureProject() {
@@ -666,23 +788,26 @@ export default function Home() {
     const result = await apiStartWorkflow({ projectId: input.projectId ?? projectId, ...input });
     if (result.next.length) {
       setWorkflowThreadId(result.threadId);
+      workflowThreadIdRef.current = result.threadId;
       localStorage.setItem(THREAD_KEY, result.threadId);
     } else {
       setWorkflowThreadId(null);
+      workflowThreadIdRef.current = null;
       localStorage.removeItem(THREAD_KEY);
     }
     return result;
   }
 
-  async function resumeWorkflow(operations: GraphOperation[]) {
-    if (!workflowThreadId) throw new Error("没有可恢复的 Workflow");
+  async function resumeWorkflow(operations: GraphOperation[], threadId = workflowThreadIdRef.current) {
+    if (!threadId) throw new Error("没有可恢复的 Workflow");
     try {
       const result = await apiResumeWorkflow({
-        threadId: workflowThreadId,
+        threadId,
         decision: { action: "commit", operations },
       });
       if (result.graphSnapshot) applyServerGraph(result.graphSnapshot);
       setWorkflowThreadId(null);
+      workflowThreadIdRef.current = null;
       setPendingCandidateIds(new Set());
       localStorage.removeItem(THREAD_KEY);
       return result;
@@ -761,22 +886,50 @@ export default function Home() {
     }
   }
 
-  // 节点编辑（FR-04）+ 需复核传播（FR-12：编辑已采用内容后标记依赖）
-  function startEditNode(node: Node) {
-    setEditingNode(true);
-    setEditDraft({ title: node.title, description: node.description, subtype: node.subtype || "" });
+  // 节点直接编辑（FR-04）：输入先更新本地画布，保存时统一提交服务端
+  function updateNodeLocal(id: string, patch: Partial<Node>) {
+    setNodes((current) => current.map((node) => node.id === id ? { ...node, ...patch } : node));
   }
+  function updateNodeAttribute(id: string, key: string, value: string) {
+    setNodes((current) => current.map((node) => node.id === id
+      ? { ...node, attributes: { ...(node.attributes || {}), [key]: value } }
+      : node));
+  }
+  function addNodeAttribute(id: string) {
+    setNodes((current) => current.map((node) => {
+      const attributes = { ...(node.attributes || {}) };
+      let index = 1;
+      while (attributes[`自定义属性${index}`]) index += 1;
+      attributes[`自定义属性${index}`] = "";
+      return node.id === id ? { ...node, attributes } : node;
+    }));
+  }
+  function removeNodeAttribute(id: string, key: string) {
+    setNodes((current) => current.map((node) => {
+      if (node.id !== id) return node;
+      const attributes = { ...(node.attributes || {}) };
+      delete attributes[key];
+      return { ...node, attributes };
+    }));
+  }
+
   async function saveEditNode(id: string) {
     const target = nodes.find((n) => n.id === id);
     if (!target) return;
+    const attributes = Object.fromEntries(
+      Object.entries(target.attributes || {})
+        .map(([key, value]) => [key, Array.isArray(value) ? value.join("、") : String(value)])
+        .filter(([key, value]) => key.trim() && String(value).trim()),
+    );
     const operations: GraphOperation[] = [{
       type: "UPDATE_NODE",
       nodeId: id,
       patch: {
-        title: editDraft.title.trim() || target.title,
-        label: editDraft.title.trim() || target.title,
-        description: editDraft.description.trim() || target.description,
-        subtype: editDraft.subtype.trim() || undefined,
+        title: target.title.trim(),
+        label: target.title.trim(),
+        description: target.description.trim(),
+        subtype: target.subtype?.trim() || undefined,
+        attributes,
         originalParentId: target.originalParentId || target.parentId,
         originalDepth: target.originalDepth ?? target.depth,
       },
@@ -795,13 +948,11 @@ export default function Home() {
     }
     try {
       await commitOperations(operations);
-      setEditingNode(false);
       setRequest(`domain.update · 节点已编辑${operations.length > 1 ? ` · ${operations.length - 1} 个依赖节点需复核` : ""}`);
     } catch (error) {
       setRequest(`编辑提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
     }
   }
-  function cancelEditNode() { setEditingNode(false); }
 
   // 需复核 → 重新确认采用（PRD 5.2：用户重新确认后才进入最终剧情）
   async function confirmNeedsReview(id: string) {
@@ -886,6 +1037,162 @@ export default function Home() {
     }
   }
 
+  async function addManualNode() {
+    const activeProjectId = projectId || await ensureProject();
+    const category: Category = "creative_element";
+    const id = `manual-${Date.now()}`;
+    const position = freePosition(category, nodes);
+    const node: Node = {
+      id,
+      title: "手动新增节点",
+      description: "在右侧补充这个节点的具体内容，再由 Creative Agent 围绕它继续生长。",
+      category,
+      subtype: "自定义",
+      status: "candidate",
+      x: position.x,
+      y: position.y,
+      depth: 1,
+      provenance: "用户手动创建",
+      attributes: { 来源: "用户" },
+      importance: 3,
+    };
+    try {
+      await commitOperations([addNodeOperation(node)], activeProjectId);
+      setSelectedId(id);
+      setRequest("domain.addNode · 手动新增节点已提交");
+    } catch (error) {
+      setRequest(`手动新增节点失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+    }
+  }
+
+  function positionForDrag(id: string) {
+    if (id === "system-source") return sourceNodePos;
+    if (id.startsWith("system-category-")) return categoryNodePos[id.replace("system-category-", "") as Category] ?? { x: 100, y: 200 };
+    return nodes.find((node) => node.id === id) ?? { x: 0, y: 0 };
+  }
+
+  function nodeCenter(node: Node) {
+    return { x: node.x + 44, y: node.y + 44 };
+  }
+
+  function semanticEdgePoints(edge: Edge) {
+    const source = nodes.find((node) => node.id === edge.source);
+    const target = nodes.find((node) => node.id === edge.target);
+    if (!source || !target) return null;
+    const a = nodeCenter(source);
+    const b = nodeCenter(target);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (!length) return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    const unitX = dx / length;
+    const unitY = dy / length;
+    const markerMargin = 8;
+    const sourceOffset = 44 + markerMargin;
+    const targetOffset = 44 + markerMargin;
+    return {
+      x1: a.x + unitX * sourceOffset,
+      y1: a.y + unitY * sourceOffset,
+      x2: b.x - unitX * targetOffset,
+      y2: b.y - unitY * targetOffset,
+    };
+  }
+
+  function relationDraftPoint(sourceId: string, targetX: number, targetY: number) {
+    const source = nodes.find((node) => node.id === sourceId);
+    if (!source) return null;
+    const a = nodeCenter(source);
+    const dx = targetX - a.x;
+    const dy = targetY - a.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (!length) return { x1: a.x, y1: a.y };
+    return {
+      x1: a.x + dx / length * 50,
+      y1: a.y + dy / length * 50,
+    };
+  }
+
+  function updateDraggedPosition(id: string, x: number, y: number) {
+    if (id === "system-source") {
+      setSourceNodePos({ x, y });
+      return;
+    }
+    if (id.startsWith("system-category-")) {
+      const category = id.replace("system-category-", "") as Category;
+      setCategoryNodePos((current) => ({ ...current, [category]: { x, y } }));
+      return;
+    }
+    setNodes((current) => current.map((node) => node.id === id ? { ...node, x, y } : node));
+  }
+
+  function startNodeDrag(event: ReactPointerEvent<HTMLDivElement>, id: string) {
+    if (spacePressedRef.current) return;
+    if (relationSource || editingEdgeId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const canvas = (event.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+    const px = event.clientX - canvas.left;
+    const py = event.clientY - canvas.top;
+    const current = positionForDrag(id);
+    movedRef.current = false;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* 捕获失败时仍可拖动 */ }
+    setDragState({ id, offsetX: px - current.x, offsetY: py - current.y });
+    setPointer({ x: px, y: py });
+    if (id.startsWith("system-")) setSelectedId(null);
+    else setSelectedId(id);
+  }
+
+  function moveNodeDrag(event: ReactPointerEvent<HTMLDivElement>, id: string) {
+    if (!dragState || dragState.id !== id) return;
+    event.preventDefault();
+    const canvas = (event.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
+    const px = event.clientX - canvas.left;
+    const py = event.clientY - canvas.top;
+    setPointer({ x: px, y: py });
+    if (movedRef.current || Math.hypot(px - pointer.x, py - pointer.y) > 0.5) movedRef.current = true;
+    const nx = px - dragState.offsetX;
+    const ny = py - dragState.offsetY;
+    updateDraggedPosition(id, nx, ny);
+  }
+
+  function endNodeDrag(event: ReactPointerEvent<HTMLDivElement>, id: string) {
+    if (!dragState || dragState.id !== id) return;
+    event.preventDefault();
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* 已释放 */ }
+    void finishDrag();
+  }
+
+  function startCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!spacePressedRef.current || event.button !== 0) return;
+    event.preventDefault();
+    panDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: panOffset.x,
+      originY: panOffset.y,
+    };
+    setPanning(true);
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* 捕获失败时仍可拖动画布 */ }
+  }
+
+  function moveCanvasPan(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!panDragRef.current) return;
+    event.preventDefault();
+    setPanOffset({
+      x: panDragRef.current.originX + event.clientX - panDragRef.current.startX,
+      y: panDragRef.current.originY + event.clientY - panDragRef.current.startY,
+    });
+  }
+
+  function endCanvasPan(event?: ReactPointerEvent<HTMLDivElement>) {
+    if (!panDragRef.current) return;
+    if (event) {
+      try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* 已释放 */ }
+    }
+    panDragRef.current = null;
+    setPanning(false);
+  }
+
   async function finishDrag() {
     if (!dragState) return;
     const movedNode = nodes.find((node) => node.id === dragState.id);
@@ -920,6 +1227,21 @@ export default function Home() {
     return path;
   }
 
+  function growthPosition(parent: Node, index: number, occupied: Node[]) {
+    const offsets = [
+      { x: -100, y: 180 },
+      { x: 115, y: 180 },
+      { x: 0, y: 260 },
+    ];
+    const preferred = offsets[index % offsets.length];
+    const base = { x: parent.x + preferred.x, y: parent.y + preferred.y };
+    for (let distance = 0; distance < 5; distance += 1) {
+      const candidate = { x: base.x + distance * 34, y: base.y + (distance % 2) * 28 };
+      if (occupied.every((node) => Math.hypot(node.x - candidate.x, node.y - candidate.y) > 100)) return candidate;
+    }
+    return { x: parent.x + (index % 2 ? 130 : -130), y: parent.y + 230 + index * 24 };
+  }
+
   function freePosition(category: Category, occupied: Node[]) {
     const xSlots: Record<Category, number[]> = {
       creative_element: [55, 165, 275],
@@ -944,6 +1266,7 @@ export default function Home() {
     setGrowthError("");
     setRequest(`graph.grow.v2 · ${modeMeta?.label} · 四 Agent 运行中`);
     try {
+      await commitPendingCandidatesIfNeeded();
       void anchor;
       void featureRefs;
       const workflow = await startWorkflow({
@@ -959,7 +1282,8 @@ export default function Home() {
       if (!result?.candidates?.length) throw new Error("Workflow 未返回生长候选");
       const additions: Node[] = [];
       result.candidates.slice(0, growthCount).forEach((candidate) => {
-        const position = freePosition(candidate.category, [...nodes, ...additions]);
+        const currentNodes = nodesRef.current.length ? nodesRef.current : nodes;
+        const position = growthPosition(parent, additions.length, [...currentNodes, ...additions]);
         additions.push({
           id: `node_${crypto.randomUUID()}`,
           title: candidate.title,
@@ -978,8 +1302,13 @@ export default function Home() {
           attributes: { ...candidate.attributes, subjectContinuity: candidate.subjectContinuity.status, subjectScore: String(candidate.subjectContinuity.score), subjectNote: candidate.subjectContinuity.note },
         });
       });
-      setNodes((current) => [...current, ...additions]);
-      setPendingCandidateIds(new Set(additions.map((node) => node.id)));
+      const nextNodes = [...nodesRef.current, ...additions];
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+      const nextPending = new Set(pendingCandidateIdsRef.current);
+      additions.forEach((node) => nextPending.add(node.id));
+      pendingCandidateIdsRef.current = nextPending;
+      setPendingCandidateIds(nextPending);
       setAgentTrace(result.trace || []);
       setRequest(`Workflow 已暂停 · ${modeMeta?.label} · ${additions.length} 个候选 · Repair ${result.repairCount}`);
       setSelectedId(additions[0]?.id || parent.id);
@@ -994,53 +1323,78 @@ export default function Home() {
 
   function nodeClick(node: Node) {
     if (relationSource && relationSource !== node.id) {
-      // 选了目标节点，调 /api/graph/relations 获取 AI 关系候选（FR-08）
+      const existingEdge = edges.find(
+        (edge) => (edge.source === relationSource && edge.target === node.id) || (edge.source === node.id && edge.target === relationSource),
+      );
       setSelectedId(node.id);
-      loadRelationCandidates(relationSource, node.id);
+      if (existingEdge) {
+        relationLoadTokenRef.current += 1;
+        relationLoadRef.current = null;
+        setRelationSource(null);
+        setEditingEdgeId(existingEdge.id);
+        setDraftEdgeId(null);
+        setDraftRelation({ label: existingEdge.label, direction: existingEdge.direction || "forward" });
+        setRelationCandidates([]);
+        return;
+      }
+      const id = `edge-${Date.now()}`;
+      setEdges((current) => [...current, { id, source: relationSource, target: node.id, label: "触发并推动", type: "semantic", direction: "forward", status: "pending" }]);
+      setEditingEdgeId(id);
+      setDraftEdgeId(id);
+      setDraftRelation({ label: "触发并推动", direction: "forward" });
+      setRelationCandidates([]);
+      setRelationSource(null);
+      const token = ++relationLoadTokenRef.current;
+      relationLoadRef.current = loadRelationCandidates(relationSource, node.id, id, token);
       return;
     }
     setSelectedId(node.id);
   }
 
-  async function loadRelationCandidates(sourceId: string, targetId: string) {
+  async function loadRelationCandidates(sourceId: string, targetId: string, edgeId?: string, token = relationLoadTokenRef.current) {
+    if (token !== relationLoadTokenRef.current) return;
+    const activeEdgeId = edgeId ?? `edge-${Date.now()}`;
+    if (!edgeId) {
+      setEdges((current) => [...current, { id: activeEdgeId, source: sourceId, target: targetId, label: "触发并推动", type: "semantic", direction: "forward", status: "pending" }]);
+      setEditingEdgeId(activeEdgeId);
+      setDraftEdgeId(activeEdgeId);
+    }
+    if (token !== relationLoadTokenRef.current) return;
     setIsLoadingRelations(true);
     setRelationError("");
-    setRelationCandidates([]);
     try {
       await commitPendingCandidatesIfNeeded();
+      if (token !== relationLoadTokenRef.current) return;
       const sourceNode = nodes.find((n) => n.id === sourceId);
       const targetNode = nodes.find((n) => n.id === targetId);
       if (!sourceNode || !targetNode) throw new Error("端点节点不存在");
       const workflow = await startWorkflow({ intent: "relations", sourceNodeId: sourceId, targetNodeId: targetId, needRag: false });
+      if (token !== relationLoadTokenRef.current) return;
       const result = workflow.candidateResult as { relations?: RelationCandidate[] };
       const candidates: RelationCandidate[] = result?.relations || [];
       setRelationCandidates(candidates);
       if (candidates.length) setDraftRelation({ label: candidates[0].label, direction: candidates[0].direction });
-      // 先创建一条 pending 边，等用户确认
-      const id = `edge-${Date.now()}`;
-      setEdges((current) => [...current, { id, source: sourceId, target: targetId, label: candidates[0]?.label || "触发并推动", type: "causes", direction: candidates[0]?.direction || "forward", status: "pending" }]);
-      setEditingEdgeId(id);
-      setDraftEdgeId(id);
+      else setDraftRelation((value) => ({ ...value, label: value.label || "触发并推动" }));
     } catch (error) {
-      // 降级：允许用户手动输入
-      const id = `edge-${Date.now()}`;
-      setEdges((current) => [...current, { id, source: sourceId, target: targetId, label: "触发并推动", type: "causes", direction: "forward", status: "pending" }]);
-      setEditingEdgeId(id);
-      setDraftEdgeId(id);
-      setDraftRelation({ label: "触发并推动", direction: "forward" });
+      if (token !== relationLoadTokenRef.current) return;
+      setDraftRelation((value) => ({ ...value, label: value.label || "触发并推动" }));
       setRelationError(error instanceof Error ? `AI 推荐 failed（可手动输入）：${error.message}` : "AI 推荐 failed，可手动输入");
     } finally {
-      setIsLoadingRelations(false);
+      if (token === relationLoadTokenRef.current) {
+        setIsLoadingRelations(false);
+        relationLoadRef.current = null;
+      }
     }
   }
 
   async function commitPendingCandidatesIfNeeded() {
-    const pending = nodes.filter((node) => pendingCandidateIds.has(node.id));
+    const pending = nodesRef.current.filter((node) => pendingCandidateIdsRef.current.has(node.id));
     if (!pending.length) return;
     const operations = pending.map((node) => addNodeOperation(node));
-    if (workflowThreadId) await resumeWorkflow(operations);
+    if (workflowThreadIdRef.current) await resumeWorkflow(operations, workflowThreadIdRef.current);
     else await commitOperations(operations);
     setPendingCandidateIds(new Set());
+    pendingCandidateIdsRef.current = new Set();
   }
 
   async function adoptAllNodes() {
@@ -1089,25 +1443,12 @@ export default function Home() {
   async function refreshRelationCandidates() {
     const edge = edges.find((item) => item.id === editingEdgeId);
     if (!edge || isLoadingRelations) return;
-    const sourceNode = nodes.find((node) => node.id === edge.source);
-    const targetNode = nodes.find((node) => node.id === edge.target);
-    if (!sourceNode || !targetNode) return;
-    setIsLoadingRelations(true);
-    setRelationError("");
-    try {
-      const workflow = await startWorkflow({ intent: "relations", sourceNodeId: edge.source, targetNodeId: edge.target, needRag: false });
-      const result = workflow.candidateResult as { relations?: RelationCandidate[] };
-      const candidates = result?.relations || [];
-      setRelationCandidates(candidates);
-      if (candidates.length) setDraftRelation({ label: candidates[0].label, direction: candidates[0].direction });
-    } catch (error) {
-      setRelationError(error instanceof Error ? `换一批失败（可手动输入）：${error.message}` : "换一批失败，可手动输入");
-    } finally {
-      setIsLoadingRelations(false);
-    }
+    relationLoadRef.current = loadRelationCandidates(edge.source, edge.target, edge.id);
   }
 
   function startRelation(node: Node) {
+    relationLoadTokenRef.current += 1;
+    relationLoadRef.current = null;
     setRelationSource(node.id);
     setEditingEdgeId(null);
     setRelationError("");
@@ -1123,6 +1464,11 @@ export default function Home() {
     }
     const edge = edges.find((item) => item.id === editingEdgeId);
     if (!edge) return;
+    const pendingRelationLoad = relationLoadRef.current;
+    if (pendingRelationLoad) {
+      try { await pendingRelationLoad; } catch { /* 加载函数内部已处理错误 */ }
+      relationLoadRef.current = null;
+    }
     try {
       const operations: GraphOperation[] = [{ type: "ADD_EDGE", edge: {
         id: edge.id,
@@ -1135,7 +1481,7 @@ export default function Home() {
         direction: draftRelation.direction,
         status: "adopted",
       } }];
-      if (workflowThreadId) await resumeWorkflow(operations);
+      if (workflowThreadIdRef.current) await resumeWorkflow(operations, workflowThreadIdRef.current);
       else await commitOperations(operations);
       setRequest("Workflow relation · 用户确认 · 已提交");
     } catch (error) {
@@ -1150,6 +1496,8 @@ export default function Home() {
   }
 
   function cancelDraftRelation() {
+    relationLoadTokenRef.current += 1;
+    relationLoadRef.current = null;
     // 只删除本次新建、尚未确认的边（draftEdgeId）；编辑已有边时取消不删除
     if (draftEdgeId) setEdges((current) => current.filter((edge) => edge.id !== draftEdgeId));
     setRelationSource(null);
@@ -1262,184 +1610,249 @@ export default function Home() {
         </div>
       </section>}
 
-      {stage === "graph" && <section className="workspace">
-        <div className="workspace-head">
-          <div><p className="eyebrow">CREATIVE KNOWLEDGE GRAPH</p><h2>{product} · 创意探索</h2></div>
-          <div className="graph-stats"><span><b>{nodes.length}</b> 节点</span><span><b>{adopted.length}</b> 已采用</span><span><b>{nodes.filter((n) => n.status === "needs_review").length}</b> 需复核</span><span><b>{edges.length}</b> 语义关系</span><span className="ready"><i style={{width: `${readiness}%`}}/>准备度 {readiness}%</span></div>
-          <div className="head-actions">
-            <button className="secondary compact" onClick={autoLayout}>⇅ 按层级整理</button>
-            <button className="secondary compact" disabled={adoptingAll || !nodes.some((node) => node.status === "candidate")} onClick={() => void adoptAllNodes()}>{adoptingAll ? "采用中…" : "全部采用"}</button>
-            <button className="secondary compact" disabled={!selectedGrowIds.length || isGrowing} onClick={() => void growSelectedNodes()}>选择节点生长（{selectedGrowIds.length}）</button>
-            <button className="primary compact" disabled={!adopted.length || isConverging} onClick={generateOutput}>{isConverging ? "Story Agent 收敛中…" : "收敛为剧情 →"}</button>
+      {stage === "graph" && <section className="graph-page prototype-graph">
+        <div className="graph-toolbar">
+          <div className="toolbar-left">
+            <button className="tool-button" onClick={() => setStage("brief")}>← 修改 Brief</button>
+            <span className="toolbar-divider" />
+            <input className="node-search" value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="搜索节点" />
+            <select className="edge-filter" value={edgeMode} onChange={(event) => setEdgeMode(event.target.value as "all" | "hierarchy" | "semantic")}>
+              <option value="all">显示全部关系</option>
+              <option value="hierarchy">只看生长层级</option>
+              <option value="semantic">只看语义关系</option>
+            </select>
+            <button className="tool-button" onClick={() => { if (layoutMode === "free") { setLayoutMode("hierarchy"); void autoLayout(); } else { setLayoutMode("free"); } }}>
+              {layoutMode === "hierarchy" ? "自由拖拽" : "层级自动布局"}
+            </button>
+          </div>
+          <div className="toolbar-right">
+            <span className="readiness"><i /> 已采纳 {adopted.length} 节点 · {adoptedEdges.length} 关系 · 准备度 {readiness}%</span>
+            <button className="tool-button" disabled={adoptingAll || !nodes.some((node) => node.status === "candidate")} onClick={() => void adoptAllNodes()}>{adoptingAll ? "采纳中…" : "全部采纳"}</button>
+            <button className="tool-button" disabled={!selectedGrowIds.length || isGrowing} onClick={() => void growSelectedNodes()}>选中节点生长 {selectedGrowIds.length}</button>
+            <button className="tool-button primary" disabled={!adopted.length || isConverging} onClick={generateOutput}>{isConverging ? "Story Agent 生成中…" : "生成方案 →"}</button>
           </div>
         </div>
-        <div className="graph-toolbar" style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-          <input value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="搜索节点" style={{ width: 180, padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }} />
-          <select value={edgeMode} onChange={(event) => setEdgeMode(event.target.value as "all" | "hierarchy" | "semantic")} style={{ padding: "8px 10px", border: "1px solid var(--line)", borderRadius: 8, background: "white", fontSize: 12 }}>
-            <option value="all">显示全部连线</option>
-            <option value="hierarchy">只看生成层级</option>
-            <option value="semantic">只看语义关系</option>
-          </select>
-          {searchText && <button className="secondary compact" onClick={() => setSearchText("")}>清除搜索</button>}
-        </div>
-        <div className="workspace-grid">
-          <aside className="architecture-panel">
-            <p className="panel-kicker">运行链路</p>
-            <div className="arch-step"><b>00</b><div><strong>Brief Normalizer</strong><small>Global Brief / Constraints</small></div><i>↓</i></div>
-            {(agentTrace.length ? agentTrace : [
-              { agent: "Supervisor", status: "waiting", summary: "任务理解与路由" },
-              { agent: "Creative", status: "waiting", summary: "三类候选生成" },
-              { agent: "Critic", status: "waiting", summary: "语义审查与局部 Repair" },
-              { agent: "Story", status: "waiting", summary: "可叙事准备度检查" },
-            ] as AgentTrace[]).map((item, index) => <div className={`arch-step agent-${item.status}`} key={item.agent}><b>{String(index + 1).padStart(2, "0")}</b><div><strong>{item.agent} Agent</strong><small>{item.summary}</small></div>{index < 3 && <i>↓</i>}</div>)}
-            <div className="arch-step"><b>05</b><div><strong>Validator + Commit</strong><small>{request} · graphRevision {revision}</small></div></div>
-            <div className="fact-box"><strong>事实边界</strong><p>AI 只生成候选；采用、删除、关系保存和版本更新由确定性业务代码执行。</p></div>
-          </aside>
 
-          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- 画布容器：点击空白处取消关系编辑，键盘 Esc 已全局支持 */}
+        <div className="pipeline-strip">
+          <span className="pipeline-kicker">AGENT PIPELINE</span>
+          {(agentTrace.length ? agentTrace : [
+            { agent: "Supervisor", status: "waiting", summary: "规划发散路线" },
+            { agent: "Creative", status: "waiting", summary: "生成候选节点" },
+            { agent: "Critic", status: "waiting", summary: "审查修复与偏题" },
+            { agent: "Story", status: "waiting", summary: "检查收敛就绪度" },
+          ] as AgentTrace[]).map((item, index) => (
+            <span key={item.agent} className={`pipeline-chip ${item.status}`} title={item.summary}><b>{index + 1}</b>{item.agent}<small>{item.summary}</small></span>
+          ))}
+          <span className="pipeline-rev">rev {revision}</span>
+          <span className="pipeline-req" title={request}>{request}</span>
+        </div>
+
+        {convergeError && <p className="graph-error">{convergeError}</p>}
+
+        <div className="graph-layout">
           <div
-            className={`canvas ${relationSource ? "relation-mode" : ""} ${dragState ? "dragging" : ""}`}
+            className={`graph-canvas ${relationSource ? "relation-mode" : ""} ${dragState ? "dragging" : ""} ${spacePressed ? "space-pan" : ""} ${panning ? "panning" : ""}`}
+            role="button"
+            tabIndex={0}
+            onPointerDown={(event) => startCanvasPan(event)}
+            onPointerMove={(event) => moveCanvasPan(event)}
+            onPointerUp={(event) => endCanvasPan(event)}
+            onPointerCancel={() => endCanvasPan()}
             onMouseMove={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
-              const px = (event.clientX - rect.left) * 920 / rect.width;
-              const py = (event.clientY - rect.top) * 650 / rect.height;
+              const px = event.clientX - rect.left;
+              const py = event.clientY - rect.top;
               setPointer({ x: px, y: py });
               if (dragState) {
                 if (movedRef.current || Math.hypot(px - pointer.x, py - pointer.y) > 0.5) movedRef.current = true;
-                const nx = Math.max(0, Math.min(832, px - dragState.offsetX));
-                const ny = Math.max(120, Math.min(558, py - dragState.offsetY));
-                setNodes((current) => current.map((node) => node.id === dragState.id ? { ...node, x: nx, y: ny } : node));
+                const nx = px - dragState.offsetX;
+                const ny = py - dragState.offsetY;
+                updateDraggedPosition(dragState.id, nx, ny);
               }
             }}
             onMouseUp={() => { void finishDrag(); }}
             onMouseLeave={() => { void finishDrag(); }}
             onClick={() => { if ((relationSource || editingEdgeId) && !movedRef.current) cancelDraftRelation(); }}
+            onKeyDown={(event) => { if (event.key === "Escape") cancelDraftRelation(); }}
           >
-            <div className="source-node"><span>推广对象</span><strong>{product}</strong></div>
-            <svg className="lines">
+            <div className="canvas-hint">
+              <span>可拖拽画布</span>
+              <small>拖动节点调整位置，点击连接点建立关系</small>
+            </div>
+            <div className="graph-layer" style={{ transform: `translate3d(${panOffset.x}px, ${panOffset.y}px, 0)` }}>
+            <div
+              className="source-node"
+              style={{ left: sourceNodePos.x, top: sourceNodePos.y, transform: "none" }}
+              onPointerDown={(event) => startNodeDrag(event, "system-source")}
+              onPointerMove={(event) => moveNodeDrag(event, "system-source")}
+              onPointerUp={(event) => endNodeDrag(event, "system-source")}
+              onPointerCancel={() => { if (dragState?.id === "system-source") void finishDrag(); }}
+            >
+              <span>推广目标</span><strong>{product}</strong>
+            </div>
+            <svg className="edge-layer">
               <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" /></marker></defs>
-              {Object.values(categoryMeta).map((meta) => <line key={meta.label} x1="460" y1="91" x2={meta.x} y2="178" className="hierarchy" />)}
-              {edgeMode !== "semantic" && visibleHierarchyEdges.map((node) => { const p = nodes.find((n) => n.id === node.parentId); return p ? <line key={`h-${node.id}`} x1={p.x + 44} y1={p.y + 44} x2={node.x + 44} y2={node.y + 44} className="hierarchy"/> : null; })}
-              {edgeMode !== "hierarchy" && visibleSemanticEdges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); return a && b ? <line key={edge.id} x1={a.x + 44} y1={a.y + 44} x2={b.x + 44} y2={b.y + 44} className={`semantic ${editingEdgeId === edge.id ? "editing" : ""}`} markerEnd={edge.direction !== "reverse" ? "url(#arrow)" : undefined} markerStart={edge.direction !== "forward" ? "url(#arrow)" : undefined}/> : null; })}
-              {relationSource && !editingEdgeId && (() => { const a = nodes.find((node) => node.id === relationSource); return a ? <line x1={a.x + 44} y1={a.y + 44} x2={pointer.x} y2={pointer.y} className="relation-preview" /> : null; })()}
+              {edgeMode !== "semantic" && Object.entries(categoryMeta).map(([key]) => {
+                const category = key as Category;
+                const categoryCenter = { x: categoryNodePos[category].x + 48, y: categoryNodePos[category].y + 48 };
+                return <line key={`h-source-${key}`} x1={sourceNodePos.x + 59} y1={sourceNodePos.y + 59} x2={categoryCenter.x} y2={categoryCenter.y} className="hierarchy-line" />;
+              })}
+              {edgeMode !== "semantic" && visibleHierarchyEdges.map((edge) => {
+                const target = nodes.find((n) => n.id === edge.targetId);
+                const p = edge.sourceId.startsWith("system-category-")
+                  ? { x: categoryNodePos[edge.sourceId.replace("system-category-", "") as Category].x + 48, y: categoryNodePos[edge.sourceId.replace("system-category-", "") as Category].y + 48 }
+                  : nodes.find((n) => n.id === edge.sourceId);
+                return p && target ? <line key={edge.id} x1={p.x} y1={p.y} x2={target.x + 44} y2={target.y + 44} className="hierarchy-line" /> : null;
+              })}
+              {edgeMode !== "hierarchy" && visibleSemanticEdges.map((edge) => { const points = semanticEdgePoints(edge); return points ? <line key={edge.id} x1={points.x1} y1={points.y1} x2={points.x2} y2={points.y2} className={`semantic-line ${editingEdgeId === edge.id ? "highlighted" : ""}`} markerEnd={edge.direction !== "reverse" ? "url(#arrow)" : undefined} markerStart={edge.direction !== "forward" ? "url(#arrow)" : undefined} /> : null; })}
+              {relationSource && !editingEdgeId && (() => { const point = relationDraftPoint(relationSource, pointer.x - panOffset.x, pointer.y - panOffset.y); return point ? <line x1={point.x1} y1={point.y1} x2={pointer.x - panOffset.x} y2={pointer.y - panOffset.y} className="draft-relation-line" /> : null; })()}
             </svg>
-            {edgeMode !== "hierarchy" && visibleSemanticEdges.map((edge) => { const a = nodes.find((n) => n.id === edge.source); const b = nodes.find((n) => n.id === edge.target); return a && b ? <button key={`label-${edge.id}`} className={`edge-label ${editingEdgeId === edge.id ? "active" : ""}`} style={{left: (a.x + b.x) / 2 + 44, top: (a.y + b.y) / 2 + 44}} onClick={(event) => { event.stopPropagation(); setEditingEdgeId(edge.id); setRelationSource(edge.source); setDraftRelation({label: edge.label, direction: edge.direction || "forward"}); }}>{edge.label}</button> : null; })}
-            {Object.entries(categoryMeta).map(([key, meta]) => <div key={key} className="category-node" style={{left: meta.x - 48, top: 130, borderColor: meta.color, color: meta.color}}>{meta.label}</div>)}
-            {visibleNodes.map((node) => <div key={node.id} role="button" tabIndex={0}
-              onClick={(event) => { event.stopPropagation(); if (!movedRef.current) nodeClick(node); }}
-              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") nodeClick(node); }}
-              onMouseDown={(event) => {
-                if (relationSource || editingEdgeId) return; // 关系模式下不拖拽
-                event.stopPropagation();
-                const canvas = (event.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-                const px = (event.clientX - canvas.left) * 920 / canvas.width;
-                const py = (event.clientY - canvas.top) * 650 / canvas.height;
-                movedRef.current = false;
-                setDragState({ id: node.id, offsetX: px - node.x, offsetY: py - node.y });
-                setSelectedId(node.id);
-              }}
-              className={`graph-node ${node.status} ${selectedId === node.id ? "selected" : ""} ${relationSource === node.id ? "connecting" : ""} ${relationSource && relationSource !== node.id ? "valid-target" : ""}`} style={{left: node.x, top: node.y, borderColor: categoryMeta[node.category].color}} title={node.description}>
-              <button type="button" aria-label={`选择${node.title}生长`} onClick={(event) => { event.stopPropagation(); toggleGrowSelection(node.id); }} style={{position:"absolute",left:6,top:6,width:18,height:18,lineHeight:"16px",fontSize:11,border:"1px solid var(--line)",borderRadius:999,background:"white",cursor:"pointer",zIndex:6}}>{selectedGrowIds.includes(node.id) ? "☑" : "☐"}</button>
-              <span className="node-state">{node.status === "adopted" ? "✓" : node.status === "excluded" ? "×" : node.status === "needs_review" ? "!" : "○"}</span>
-              <strong>{node.title}</strong><small>{node.subtype || categoryMeta[node.category].label}</small>
-              {node.growthMode && <span className="growth-badge">生长候选</span>}
-              {(selectedId === node.id || relationSource === node.id) && <button className="connector-dot" aria-label={`从${node.title}建立关系`} onClick={(event) => { event.stopPropagation(); startRelation(node); }} />}
-              {selectedId === node.id && !relationSource && <button className="node-grow" onClick={(event) => { event.stopPropagation(); openGrowth(node); }}>＋ 继续生长</button>}
-            </div>)}
-            {relationSource && <div className="relation-tip">请选择另一个内容节点建立关系 · Esc 可取消</div>}
-            {editingEdgeId && (() => { const edge = edges.find((item) => item.id === editingEdgeId); const a = nodes.find((n) => n.id === edge?.source); const b = nodes.find((n) => n.id === edge?.target); return edge && a && b ? (
-              /* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- 浮层容器阻止冒泡到画布 */
-              <div className="relation-editor" style={{left: (a.x + b.x) / 2 + 44, top: (a.y + b.y) / 2 + 58}} onClick={(event) => event.stopPropagation()}>
-              {isLoadingRelations ? <div className="relation-loading">Creative Agent 生成关系候选…</div> : relationCandidates.length ? (
-                <div className="relation-candidates">{relationCandidates.map((candidate) => <button key={candidate.label} className={draftRelation.label === candidate.label ? "active" : ""} title={candidate.rationale} onClick={() => setDraftRelation({ label: candidate.label, direction: candidate.direction })}>{candidate.label}</button>)}</div>
-              ) : (
-                <div className="relation-candidates"><button onClick={() => setDraftRelation((value) => ({...value, label: "触发并推动"}))}>触发并推动</button><button onClick={() => setDraftRelation((value) => ({...value, label: "阻碍并升级"}))}>阻碍并升级</button><button onClick={() => setDraftRelation((value) => ({...value, label: "形成反转"}))}>形成反转</button></div>
-              )}
-              <div className="relation-toolbar" style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
-                <button className="secondary" style={{ padding: "4px 8px", fontSize: 9 }} disabled={isLoadingRelations} onClick={() => void refreshRelationCandidates()}>换一批</button>
+
+            {edgeMode !== "hierarchy" && visibleSemanticEdges.map((edge) => { const points = semanticEdgePoints(edge); return points ? <button key={`label-${edge.id}`} className={`edge-label ${editingEdgeId === edge.id ? "active" : ""}`} style={{ left: (points.x1 + points.x2) / 2, top: (points.y1 + points.y2) / 2 - 8 }} onClick={(event) => { event.stopPropagation(); setEditingEdgeId(edge.id); setRelationSource(edge.source); setDraftRelation({ label: edge.label, direction: edge.direction || "forward" }); }}>{edge.label}</button> : null; })}
+            {Object.entries(categoryMeta).map(([key, meta]) => {
+              const category = key as Category;
+              const pos = categoryNodePos[category];
+              return (
+                <div
+                  key={key}
+                  className={`category-node ${key}`}
+                  style={{ left: pos.x, top: pos.y }}
+                  onPointerDown={(event) => startNodeDrag(event, `system-category-${category}`)}
+                  onPointerMove={(event) => moveNodeDrag(event, `system-category-${category}`)}
+                  onPointerUp={(event) => endNodeDrag(event, `system-category-${category}`)}
+                  onPointerCancel={() => { if (dragState?.id === `system-category-${category}`) void finishDrag(); }}
+                >
+                  {meta.label}
+                </div>
+              );
+            })}
+            {visibleNodes.map((node) => (
+              <div key={node.id} role="button" tabIndex={0}
+                onClick={(event) => { event.stopPropagation(); if (!movedRef.current) nodeClick(node); }}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") nodeClick(node); }}
+                onPointerDown={(event) => startNodeDrag(event, node.id)}
+                onPointerMove={(event) => moveNodeDrag(event, node.id)}
+                onPointerUp={(event) => endNodeDrag(event, node.id)}
+                onPointerCancel={() => { if (dragState?.id === node.id) void finishDrag(); }}
+                className={`graph-node creative ${node.category} ${node.status} ${selectedId === node.id ? "selected" : ""} ${relationSource === node.id ? "connecting" : ""} ${relationSource && relationSource !== node.id ? "relation-target" : ""}`}
+                style={{ left: node.x, top: node.y, "--node-size": "88px" } as CSSProperties}
+                title={node.description}
+              >
+                <strong className="node-title">{node.title}</strong>
+                <span className="node-status-icon">{node.status === "adopted" ? "✓" : node.status === "excluded" ? "×" : node.status === "needs_review" ? "!" : "·"}</span>
+                <button type="button" className="node-connector" title="建立关系" onPointerDown={(event) => { if (spacePressedRef.current) return; event.stopPropagation(); }} onMouseDown={(event) => { if (spacePressedRef.current) return; event.stopPropagation(); }} onClick={(event) => { if (spacePressedRef.current) return; event.stopPropagation(); startRelation(node); }} />
+                <div className="node-quick-actions">
+                  <label><input type="checkbox" onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} checked={selectedGrowIds.includes(node.id)} onChange={() => toggleGrowSelection(node.id)} /> 生长</label>
+                  <button type="button" onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={() => setSelectedId(node.id)}>详情</button>
+                </div>
+                {node.growthMode && <span className="growth-badge">生长候选</span>}
+                {selectedId === node.id && !relationSource && <button className="node-grow" onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); openGrowth(node); }}>+ 生成候选</button>}
               </div>
-              {/* eslint-disable-next-line jsx-a11y/no-autofocus -- 打开编辑器即聚焦输入，提升演示效率 */}
-              <input value={draftRelation.label} onChange={(event) => setDraftRelation((value) => ({...value, label: event.target.value}))} placeholder="输入关系" autoFocus />
-              <div className="direction-picker"><button className={draftRelation.direction === "forward" ? "active" : ""} onClick={() => setDraftRelation((value) => ({...value, direction: "forward"}))}>起点→终点</button><button className={draftRelation.direction === "reverse" ? "active" : ""} onClick={() => setDraftRelation((value) => ({...value, direction: "reverse"}))}>终点→起点</button><button className={draftRelation.direction === "both" ? "active" : ""} onClick={() => setDraftRelation((value) => ({...value, direction: "both"}))}>双向</button></div>
-              {relationError && <p>{relationError}</p>}<div className="editor-actions"><button onClick={cancelDraftRelation}>取消</button><button className="confirm" onClick={saveRelation}>确认关系</button></div>
+            ))}
+            {!visibleNodes.length && <div className="empty-graph"><span>?</span><p>没有匹配的节点</p></div>}
+            {relationSource && <div className="relation-tip">点击另一个内容节点建立关系 · Esc 取消</div>}
+            {editingEdgeId && (() => { const edge = edges.find((item) => item.id === editingEdgeId); const a = nodes.find((n) => n.id === edge?.source); const b = nodes.find((n) => n.id === edge?.target); return edge && a && b ? (
+              /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- 关系编辑浮层阻止画布冒泡并支持 Esc 取消 */
+              <div className="relation-editor" role="dialog" aria-label="编辑语义关系" style={{ left: (a.x + b.x) / 2 + 44, top: (a.y + b.y) / 2 + 58 }} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") cancelDraftRelation(); }}>
+                <strong>编辑语义关系</strong>
+                {isLoadingRelations ? <div className="relation-loading">Creative Agent 生成关系候选…</div> : relationCandidates.length ? (
+                  <div className="candidate-relations">{relationCandidates.map((candidate) => <button key={candidate.label} className={draftRelation.label === candidate.label ? "active" : ""} title={candidate.rationale} onClick={() => setDraftRelation({ label: candidate.label, direction: candidate.direction })}>{candidate.label}</button>)}</div>
+                ) : (
+                  <div className="candidate-relations"><button onClick={() => setDraftRelation((value) => ({ ...value, label: "推动剧情发展" }))}>推动剧情发展</button><button onClick={() => setDraftRelation((value) => ({ ...value, label: "形成障碍冲突" }))}>形成障碍冲突</button><button onClick={() => setDraftRelation((value) => ({ ...value, label: "构成反转" }))}>构成反转</button></div>
+                )}
+                <div className="relation-toolbar"><button disabled={isLoadingRelations} onClick={() => void refreshRelationCandidates()}>换一批</button></div>
+                {/* eslint-disable-next-line jsx-a11y/no-autofocus -- 打开编辑器时聚焦输入，便于快速输入 */}
+                <input value={draftRelation.label} onChange={(event) => setDraftRelation((value) => ({ ...value, label: event.target.value }))} placeholder="输入关系" autoFocus />
+                <div className="relation-direction"><button className={draftRelation.direction === "forward" ? "active" : ""} onClick={() => setDraftRelation((value) => ({ ...value, direction: "forward" }))}>源 → 目标</button><button className={draftRelation.direction === "reverse" ? "active" : ""} onClick={() => setDraftRelation((value) => ({ ...value, direction: "reverse" }))}>目标 → 源</button><button className={draftRelation.direction === "both" ? "active" : ""} onClick={() => setDraftRelation((value) => ({ ...value, direction: "both" }))}>双向</button></div>
+                {relationError && <p>{relationError}</p>}
+                <div className="editor-actions"><button onClick={cancelDraftRelation}>取消</button><button className="confirm" onClick={saveRelation}>确认关系</button></div>
               </div>
             ) : null; })()}
+            </div>
           </div>
 
-          <aside className="detail-panel">
-            {!selected && <div className="empty-detail"><span>↖</span><h3>选择一个创意节点</h3><p>查看结构化字段、来源和可执行操作。</p></div>}
+          <aside className="inspector">
+            {!selected && <div className="inspector-empty">
+              <div className="empty-orbit">?</div>
+              <h2>选择一个内容节点</h2>
+              <p>在右侧编辑属性、调整方向、建立语义关系和生长分支。</p>
+              <button className="tool-button primary" onClick={() => void addManualNode()}>手动新增节点</button>
+            </div>}
             {selected && <>
-              <p className="panel-kicker">NODE DETAIL</p>
-              <div className="detail-title"><span style={{background: categoryMeta[selected.category].color}}/><div><h3>{selected.title}</h3><small>{selected.id}</small></div></div>
-              {editingNode ? (
-                <div className="edit-form">
-                  <label>名称<input value={editDraft.title} onChange={(e) => setEditDraft((v) => ({ ...v, title: e.target.value }))} /></label>
-                  <label>描述<textarea value={editDraft.description} onChange={(e) => setEditDraft((v) => ({ ...v, description: e.target.value }))} /></label>
-                  <label>子类型<input value={editDraft.subtype} onChange={(e) => setEditDraft((v) => ({ ...v, subtype: e.target.value }))} placeholder="如：人物、道具、对抗" /></label>
-                  <div className="editor-actions"><button onClick={cancelEditNode}>取消</button><button className="confirm" onClick={() => saveEditNode(selected.id)}>保存编辑</button></div>
-                </div>
-              ) : (
-                <>
-                  <p className="description">{selected.description}</p>
-                  {selected.status === "needs_review" && (
-                    <div className="needs-review-banner">
-                      <strong>该节点依赖的内容已被编辑</strong>
-                      <p>请复核后重新确认；确认前不会进入最终剧情。</p>
-                      <button className="confirm" onClick={() => confirmNeedsReview(selected.id)}>确认仍采用</button>
+              <div className="inspector-header">
+                <div><span className="inspector-kicker">{categoryMeta[selected.category].label}</span><h2>{selected.title}</h2></div>
+                <span className={`status-tag ${selected.status}`}>{statusLabel(selected.status)}</span>
+              </div>
+              <div className="edit-form">
+                <label>标题<input value={selected.title} onChange={(event) => updateNodeLocal(selected.id, { title: event.target.value })} /></label>
+                <label>描述<textarea value={selected.description} onChange={(event) => updateNodeLocal(selected.id, { description: event.target.value })} /></label>
+                <label>子类型<input value={selected.subtype || ""} onChange={(event) => updateNodeLocal(selected.id, { subtype: event.target.value })} placeholder="如：道具、角色、冲突" /></label>
+              </div>
+              {selected.status === "needs_review" && (
+                <div className="needs-review-banner"><strong>该节点被 AI 修改后进入复核</strong><p>请复核后确认采纳，确保不偏离全局约束。</p><button className="confirm" onClick={() => confirmNeedsReview(selected.id)}>确认已采纳</button></div>
+              )}
+              <div className="panel-section">
+                <div className="panel-title"><strong>节点信息</strong></div>
+                <dl>
+                  <div><dt>来源</dt><dd>{selected.provenance}</dd></div>
+                  <div><dt>层级</dt><dd>{selected.depth ?? 1}{selected.originalDepth && selected.originalDepth !== selected.depth ? `（原 ${selected.originalDepth}）` : ""}</dd></div>
+                  <div><dt>重要性</dt><dd><span className="importance-picker">{[1, 2, 3, 4, 5].map((level) => <button key={level} className={(selected.importance || 3) >= level ? "on" : ""} onClick={() => updateImportance(selected.id, level)} aria-label={`重要性 ${level}`}>★</button>)}</span></dd></div>
+                </dl>
+              </div>
+              <div className="panel-section">
+                <div className="panel-title"><strong>推荐属性</strong><button className="text-action" onClick={() => addNodeAttribute(selected.id)}>+ 添加字段</button></div>
+                <div className="attribute-rows">
+                  {Object.entries(selected.attributes || {}).map(([key, value]) => (
+                    <div className="attribute-row" key={key}>
+                      <input value={key} disabled />
+                      <input value={Array.isArray(value) ? value.join("、") : String(value)} onChange={(event) => updateNodeAttribute(selected.id, key, event.target.value)} />
+                      <button type="button" aria-label={`删除 ${key}`} onClick={() => removeNodeAttribute(selected.id, key)}>×</button>
                     </div>
-                  )}
-                  <dl>
-                    <div><dt>类别</dt><dd>{categoryMeta[selected.category].label}</dd></div>
-                    <div><dt>子类型</dt><dd>{selected.subtype || "通用"}</dd></div>
-                    <div><dt>状态</dt><dd>{statusLabel(selected.status)}</dd></div>
-                    <div><dt>来源</dt><dd>{selected.provenance}</dd></div>
-                    <div><dt>生成深度</dt><dd>{selected.depth ?? 1}{selected.originalDepth && selected.originalDepth !== selected.depth ? `（原 ${selected.originalDepth}）` : ""}</dd></div>
-                    <div><dt>重要性</dt><dd>
-                      <span className="importance-picker">
-                        {[1, 2, 3, 4, 5].map((level) => <button key={level} className={(selected.importance || 3) >= level ? "on" : ""} onClick={() => updateImportance(selected.id, level)} aria-label={`重要性 ${level}`}>★</button>)}
-                      </span>
-                    </dd></div>
-                  </dl>
-                  <div className="action-grid">
-                    <button onClick={() => updateStatus(selected.id, "adopted")}>✓ 采用</button>
-                    <button onClick={() => updateStatus(selected.id, "excluded")}>× 排除</button>
-                    <button onClick={() => updateStatus(selected.id, "candidate")}>↺ 恢复待选</button>
-                    <button onClick={() => startEditNode(selected)}>✎ 编辑</button>
-                    <button onClick={() => openGrowth(selected)}>＋ 继续生长</button>
-                    <button onClick={() => startRelation(selected)}>↗ 建立关系</button>
-                    <button className="danger" onClick={() => openDeleteConfirm(selected)}>🗑 删除</button>
-                  </div>
-                </>
-              )}
-              {deleteConfirm && deleteConfirm.nodeId === selected.id && (
-                <div className="delete-confirm">
-                  <strong>删除「{deleteConfirm.nodeTitle}」</strong>
-                  {deleteConfirm.descendantCount > 0 && <p>该节点有 {deleteConfirm.descendantCount} 个后代节点。</p>}
-                  <div className="editor-actions">
-                    <button onClick={() => setDeleteConfirm(null)}>取消</button>
-                    <button onClick={() => deleteNodeOnly(deleteConfirm.nodeId)}>仅删当前节点{deleteConfirm.descendantCount > 0 ? "（后代上移）" : ""}</button>
-                    {deleteConfirm.descendantCount > 0 && <button className="danger" onClick={() => deleteCascade(deleteConfirm.nodeId)}>级联删除（{deleteConfirm.descendantCount + 1} 个节点）</button>}
-                  </div>
+                  ))}
+                  {!Object.keys(selected.attributes || {}).length && <p className="empty-copy">暂无推荐属性，可添加自定义字段。</p>}
                 </div>
-              )}
+              </div>
+              <div className="panel-section">
+                <div className="panel-title"><strong>语义关系</strong><button className="text-action" onClick={() => startRelation(selected)}>建立关系</button></div>
+                {edges.filter((edge) => edge.source === selected.id || edge.target === selected.id).length ? edges.filter((edge) => edge.source === selected.id || edge.target === selected.id).map((edge) => <span className="relation-chip" key={edge.id}>{edge.label} · {edge.status}</span>) : <p className="empty-copy">尚未建立语义关系。</p>}
+              </div>
+              <div className="inspector-actions">
+                <button onClick={() => updateStatus(selected.id, "adopted")}>采纳</button>
+                <button onClick={() => updateStatus(selected.id, "excluded")}>排除</button>
+                <button onClick={() => saveEditNode(selected.id)}>保存</button>
+                <button onClick={() => openGrowth(selected)}>生长</button>
+                <button className="danger" onClick={() => openDeleteConfirm(selected)}>删除</button>
+                {selected.status === "excluded" && <button onClick={() => updateStatus(selected.id, "candidate")}>恢复</button>}
+              </div>
               {growthOpen && <section className="growth-panel">
-                <div className="growth-head"><div><small>CONTROLLED GROWTH</small><h4>从“{selected.title}”继续生长</h4></div><button onClick={() => setGrowthOpen(false)} aria-label="关闭生长设置">×</button></div>
-                <div className="anchor-card"><span>推广主体</span><strong>{product}</strong><em>始终携带</em></div>
-                <div className={`anchor-card ${narrativeAnchor ? "safe" : "warning"}`}><span>叙事主体</span><strong>{narrativeAnchor?.title || "尚未采用人物节点"}</strong><em>{narrativeAnchor ? "已锚定" : "建议先采用主体"}</em></div>
-                <div className="path-preview"><span>祖先路径</span><div>{ancestorPath(selected).map((node, index) => <b key={node.id}>{index > 0 && <i>→</i>}{node.title}</b>)}</div></div>
-                <p className="growth-label">选择生长方向</p>
+                <div className="growth-head"><div><small>GROWTH</small><h4>从「{selected.title}」生长新分支</h4></div><button onClick={() => setGrowthOpen(false)} aria-label="关闭生长面板">×</button></div>
+                <div className="anchor-card"><span>推广目标</span><strong>{product}</strong><em>始终携带</em></div>
+                <div className={`anchor-card ${narrativeAnchor ? "safe" : "warning"}`}><span>叙事锚点</span><strong>{narrativeAnchor?.title || "尚未确定核心角色"}</strong><em>{narrativeAnchor ? "已锚定" : "建议先采纳角色"}</em></div>
+                <p className="growth-label">选择生长方式</p>
                 <div className="growth-modes">{growthModes.map((mode) => <button key={mode.id} className={growthMode === mode.id ? "active" : ""} onClick={() => { setGrowthMode(mode.id); if (mode.category) setGrowthCategory(mode.category); }}><strong>{mode.label}</strong><small>{mode.hint}</small></button>)}</div>
-                {!growthModes.find((mode) => mode.id === growthMode)?.category && <div className="category-picker"><span>生成类型</span>{(Object.keys(categoryMeta) as Category[]).map((category) => <button key={category} className={growthCategory === category ? "active" : ""} onClick={() => setGrowthCategory(category)}>{categoryMeta[category].label}</button>)}</div>}
-                <label className="growth-instruction">补充要求（可选）<textarea value={growthInstruction} onChange={(event) => setGrowthInstruction(event.target.value)} placeholder="例如：保持轻松荒诞，不增加新主角" /></label>
-                <div className="growth-footer"><div><span>候选数量</span><button disabled={isGrowing} className={growthCount === 2 ? "active" : ""} onClick={() => setGrowthCount(2)}>2</button><button disabled={isGrowing} className={growthCount === 3 ? "active" : ""} onClick={() => setGrowthCount(3)}>3</button></div><button disabled={isGrowing} className="generate-growth" onClick={() => executeGrowth(selected)}>{isGrowing ? "四 Agent 生成中…" : "生成候选 →"}</button></div>
-                <div className="guard-row"><span>✓ Global Brief</span><span>✓ 主体契约</span><span>✓ 已采用邻域</span><span>✓ 排除记忆</span></div>
+                {!growthModes.find((mode) => mode.id === growthMode)?.category && <div className="category-picker"><span>目标类别</span>{(Object.keys(categoryMeta) as Category[]).map((category) => <button key={category} className={growthCategory === category ? "active" : ""} onClick={() => setGrowthCategory(category)}>{categoryMeta[category].label}</button>)}</div>}
+                <label className="growth-instruction">生长要求（可选）<textarea value={growthInstruction} onChange={(event) => setGrowthInstruction(event.target.value)} placeholder="例如：围绕玩梗制造荒诞感，不要重复现有节点" /></label>
+                <div className="growth-footer"><div><span>候选数量</span><button disabled={isGrowing} className={growthCount === 2 ? "active" : ""} onClick={() => setGrowthCount(2)}>2</button><button disabled={isGrowing} className={growthCount === 3 ? "active" : ""} onClick={() => setGrowthCount(3)}>3</button></div><button disabled={isGrowing} className="generate-growth" onClick={() => executeGrowth(selected)}>{isGrowing ? "Agent 生成中…" : "生成候选 →"}</button></div>
                 {growthError && <p className="growth-error">{growthError}</p>}
               </section>}
-              <div className="json-preview"><div><span>STRUCTURED DATA</span><b>JSON</b></div><pre>{JSON.stringify({id:selected.id, category:selected.category, subtype:selected.subtype, attributes:selected.attributes, status:selected.status, revision}, null, 2)}</pre></div>
             </>}
           </aside>
         </div>
+
+        {deleteConfirm && <div className="delete-modal-backdrop" role="presentation" onClick={() => setDeleteConfirm(null)}>
+          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- 弹窗容器阻止冒泡 */}
+          <div className="delete-modal" role="dialog" aria-label="删除节点确认" onClick={(event) => event.stopPropagation()}>
+            <strong>删除「{deleteConfirm.nodeTitle}」？</strong>
+            {deleteConfirm.descendantCount > 0 && <p>该节点还有 {deleteConfirm.descendantCount} 个后代节点。</p>}
+            <div className="editor-actions">
+              <button onClick={() => setDeleteConfirm(null)}>取消</button>
+              <button onClick={() => deleteNodeOnly(deleteConfirm.nodeId)}>仅删除当前节点{deleteConfirm.descendantCount > 0 ? "（后代自动上提）" : ""}</button>
+              {deleteConfirm.descendantCount > 0 && <button className="danger" onClick={() => deleteCascade(deleteConfirm.nodeId)}>级联删除（共 {deleteConfirm.descendantCount + 1} 个节点）</button>}
+            </div>
+          </div>
+        </div>}
       </section>}
+
 
       {stage === "output" && <section className="output-page">
         <div className="output-intro"><p className="eyebrow">TRACEABLE STORY OUTPUT</p><h1>每一个剧情节拍，<br/>都有图谱依据。</h1><p>系统只读取已采用子图；未采用和已排除节点不会进入最终生成上下文。</p><div className="head-actions output-actions" style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 18 }}><button className="secondary" onClick={exportStoryMarkdown}>导出 Markdown</button><button className="secondary" onClick={exportStoryCsv}>导出分镜 CSV</button><button className="secondary" onClick={copyStoryText}>{exportNotice || "复制全文"}</button><button className="secondary" onClick={() => setStage("graph")}>← 返回图谱调整</button></div></div>
@@ -1470,7 +1883,7 @@ export default function Home() {
                 <div><span style={{ fontSize: 9, color: "var(--muted)" }}>修改前</span><pre style={{ whiteSpace: "pre-wrap", fontSize: 10 }}>{JSON.stringify(aiDiff.before, null, 2)}</pre></div>
                 <div><span style={{ fontSize: 9, color: "var(--muted)" }}>修改后</span><pre style={{ whiteSpace: "pre-wrap", fontSize: 10 }}>{JSON.stringify(aiDiff.after, null, 2)}</pre></div>
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button className="secondary" disabled onClick={() => setAiDiff(null)}>拒绝</button><button className="secondary" disabled title="待技术接入">部分接受</button><button className="primary compact" disabled title="待技术接入">全部接受</button></div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}><button className="secondary" onClick={() => setAiDiff(null)}>拒绝</button><button className="secondary" onClick={() => applyAiDiff(false)}>部分接受</button><button className="primary compact" onClick={() => applyAiDiff(true)}>全部接受</button></div>
             </div>}
           </div>
         </div>

@@ -27,6 +27,42 @@ function waitForRetry(delayMs: number, signal?: AbortSignal) {
   });
 }
 
+function extractJsonContent(content: string): unknown {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // 继续尝试从 Markdown 代码块或首尾 JSON 片段中恢复。
+  }
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) {
+    try {
+      return JSON.parse(fence[1].trim());
+    } catch {
+      // 继续尝试普通 JSON 片段。
+    }
+  }
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    try {
+      return JSON.parse(trimmed.slice(objectStart, objectEnd + 1));
+    } catch {
+      // 继续尝试数组片段。
+    }
+  }
+  const arrayStart = trimmed.indexOf("[");
+  const arrayEnd = trimmed.lastIndexOf("]");
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    try {
+      return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
+    } catch {
+      // 无法恢复为合法 JSON。
+    }
+  }
+  throw new Error("DeepSeek 返回内容不是合法 JSON");
+}
+
 /**
  * 统一 LLM 入口：根据 CREATIVE_MODEL_PROVIDER 切 mock / deepseek。
  * - mock：不调用真实 API，返回固定候选，无 Key 时也能跑通完整演示（PRD 9.1）
@@ -47,7 +83,7 @@ export async function callDeepSeekJson<T>(messages: ChatMessage[], signal?: Abor
 
   const baseUrl = (runtimeEnv.OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL ?? runtimeEnv.DEEPSEEK_BASE_URL ?? process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").replace(/\/$/, "");
   const model = runtimeEnv.OPENAI_MODEL ?? process.env.OPENAI_MODEL ?? runtimeEnv.DEEPSEEK_MODEL ?? process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
-  const maxTokens = Number(runtimeEnv.OPENAI_MAX_TOKENS ?? process.env.OPENAI_MAX_TOKENS ?? runtimeEnv.DEEPSEEK_MAX_TOKENS ?? process.env.DEEPSEEK_MAX_TOKENS ?? 4096);
+  const maxTokens = Number(runtimeEnv.OPENAI_MAX_TOKENS ?? process.env.OPENAI_MAX_TOKENS ?? runtimeEnv.DEEPSEEK_MAX_TOKENS ?? process.env.DEEPSEEK_MAX_TOKENS ?? 8192);
 
   const retryMax = Math.max(0, Math.min(Number(runtimeEnv.OPENAI_RETRY_MAX ?? 2), 3));
   let response: Response | undefined;
@@ -88,9 +124,5 @@ export async function callDeepSeekJson<T>(messages: ChatMessage[], signal?: Abor
   const content = payload.choices?.[0]?.message?.content;
   if (!content) throw new Error("DeepSeek 返回了空内容");
 
-  try {
-    return JSON.parse(content) as T;
-  } catch {
-    throw new Error("DeepSeek 返回内容不是合法 JSON");
-  }
+  return extractJsonContent(content) as T;
 }

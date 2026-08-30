@@ -53,7 +53,7 @@ test("首轮生成后可直接建立语义关系，不报 Node not found", async
   const first = page.locator(".graph-node").nth(0);
   const second = page.locator(".graph-node").nth(1);
   await first.click();
-  await first.locator(".connector-dot").click();
+  await first.locator(".node-connector").click();
   await second.click();
   await expect(page.locator(".relation-editor")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "确认关系" }).click();
@@ -63,7 +63,7 @@ test("首轮生成后可直接建立语义关系，不报 Node not found", async
   const firstTop = await first.evaluate((el) => parseFloat((el as HTMLElement).style.top));
   const secondLeft = await second.evaluate((el) => parseFloat((el as HTMLElement).style.left));
   const secondTop = await second.evaluate((el) => parseFloat((el as HTMLElement).style.top));
-  const line = page.locator("line.semantic").first();
+  const line = page.locator("line.semantic-line").first();
   const x1 = Number(await line.getAttribute("x1"));
   const y1 = Number(await line.getAttribute("y1"));
   const x2 = Number(await line.getAttribute("x2"));

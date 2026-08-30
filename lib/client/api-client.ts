@@ -121,7 +121,7 @@ export function startWorkflow(input: Record<string, unknown>) {
   return apiFetch<WorkflowStateEnvelope>("/api/workflow/start", {
     method: "POST",
     body: JSON.stringify(input),
-  });
+  }, 300000);
 }
 
 export function resumeWorkflow(input: Record<string, unknown>) {
@@ -155,5 +155,5 @@ export function reviseStory(body: {
   return apiFetch<{ before: unknown; after: unknown; changes: unknown[] }>("/api/story/revise", {
     method: "POST",
     body: JSON.stringify(body),
-  });
+  }, 120000);
 }
