@@ -8,7 +8,10 @@ export async function GET(request: Request, context: RouteContext) {
   const requestId = getRequestId(request);
   try {
     const { threadId } = await context.params;
-    return okJson(await (await getWorkflowRuntime()).getState(threadId), {}, requestId);
+    const runtime = await getWorkflowRuntime();
+    const state = await runtime.getState(threadId);
+    await runtime.close();
+    return okJson(state, {}, requestId);
   } catch (error) {
     return routeError(error, ERROR_CODES.INTERNAL_ERROR, 500, requestId);
   }

@@ -17,7 +17,9 @@ export async function POST(request: Request) {
     if (!actions.has(String(decision.action)) || ("operations" in decision && !Array.isArray(decision.operations))) {
       return errorJson(ERROR_CODES.VALIDATION_ERROR, "Invalid human decision", 400, undefined, requestId);
     }
-    const state = await (await getWorkflowRuntime()).resume(threadId, decision as HumanDecision);
+    const runtime = await getWorkflowRuntime();
+    const state = await runtime.resume(threadId, decision as HumanDecision);
+    await runtime.close();
     return okJson(state, {}, requestId);
   } catch (error) {
     return routeError(error, ERROR_CODES.INTERNAL_ERROR, 500, requestId);

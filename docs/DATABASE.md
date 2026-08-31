@@ -5,6 +5,7 @@ PostgreSQL is the durable source of truth for projects, Creative Graph nodes and
 ## Configuration
 
 - `PERSISTENCE_PROVIDER=memory|postgres` selects the repository implementation.
+- If omitted, `PERSISTENCE_PROVIDER` defaults to `postgres`; `memory` must be selected explicitly.
 - `DATABASE_URL` is required when the provider is `postgres`. Connection failures are explicit; the application never silently falls back to memory.
 - `POSTGRES_TEST_DATABASE_URL` is the only database used by destructive integration fixtures. Never point it at production.
 
@@ -31,5 +32,7 @@ Migrations run in filename order and are idempotent. `0001_core_persistence.sql`
 ```bash
 POSTGRES_TEST_DATABASE_URL=postgres://... npm run test:postgres
 ```
+
+After startup/migration, run `npm run db:verify`. It checks connectivity, all required business tables, and initializes/verifies the durable LangGraph checkpoint schema.
 
 The integration suite verifies CRUD, graph operations, revision conflicts, transaction rollback, idempotency, both node-delete modes, unique story versions, project cascade deletion, and recovery after rebuilding the repository instance. Without `POSTGRES_TEST_DATABASE_URL`, the suite reports `SKIP`; it must not be reported as passing.

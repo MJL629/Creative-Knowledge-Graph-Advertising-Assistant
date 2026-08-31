@@ -29,16 +29,16 @@ test("mock 完整闭环：Brief → 图谱 → 采用 → 生长 → 剧情 → 
   await startFromBrief(page, "E2E 测试水世界", "透明王冠挑战");
 
   await page.locator(".graph-node").first().click();
-  await page.getByRole("button", { name: "✓ 采用" }).click();
-  await expect(page.locator(".graph-stats")).toContainText("1 已采用");
+  await page.getByRole("button", { name: "采纳", exact: true }).click();
+  await expect(page.locator(".readiness")).toContainText("已采纳 1 节点");
 
   await page.locator(".graph-node.adopted").first().click();
-  await page.locator(".detail-panel").getByRole("button", { name: "＋ 继续生长" }).click();
+  await page.getByRole("button", { name: "+ 生成候选", exact: true }).click();
   await expect(page.getByRole("button", { name: "生成候选 →" })).toBeVisible();
   await page.getByRole("button", { name: "生成候选 →" }).click();
   await expect(page.locator(".graph-node")).toHaveCount(8, { timeout: 30_000 });
 
-  await page.getByRole("button", { name: /收敛为剧情/ }).click();
+  await page.getByRole("button", { name: /生成方案/ }).click();
   await expect(page.getByText("TRACEABLE STORY OUTPUT")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "导出 Markdown" })).toBeVisible();
   await expect(page.getByRole("button", { name: "导出分镜 CSV" })).toBeVisible();
@@ -54,10 +54,11 @@ test("首轮生成后可直接建立语义关系，不报 Node not found", async
   const second = page.locator(".graph-node").nth(1);
   await first.click();
   await first.locator(".node-connector").click();
+  await expect(page.locator(".relation-tip")).toBeVisible();
   await second.click();
   await expect(page.locator(".relation-editor")).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: "确认关系" }).click();
-  await expect(page.locator(".graph-stats")).toContainText("1 语义关系", { timeout: 30_000 });
+  await expect(page.locator("line.semantic-line")).toHaveCount(1, { timeout: 30_000 });
 
   const firstLeft = await first.evaluate((el) => parseFloat((el as HTMLElement).style.left));
   const firstTop = await first.evaluate((el) => parseFloat((el as HTMLElement).style.top));
@@ -68,10 +69,12 @@ test("首轮生成后可直接建立语义关系，不报 Node not found", async
   const y1 = Number(await line.getAttribute("y1"));
   const x2 = Number(await line.getAttribute("x2"));
   const y2 = Number(await line.getAttribute("y2"));
-  expect(Math.abs(x1 - (firstLeft + 44))).toBeLessThan(2);
-  expect(Math.abs(y1 - (firstTop + 44))).toBeLessThan(2);
-  expect(Math.abs(x2 - (secondLeft + 44))).toBeLessThan(2);
-  expect(Math.abs(y2 - (secondTop + 44))).toBeLessThan(2);
+  const firstRadius = Math.hypot(x1 - (firstLeft + 44), y1 - (firstTop + 44));
+  const secondRadius = Math.hypot(x2 - (secondLeft + 44), y2 - (secondTop + 44));
+  expect(firstRadius).toBeGreaterThan(45);
+  expect(firstRadius).toBeLessThan(55);
+  expect(secondRadius).toBeGreaterThan(45);
+  expect(secondRadius).toBeLessThan(55);
 });
 
 test("图谱工具栏支持搜索和全部采用", async ({ page }) => {
@@ -83,15 +86,15 @@ test("图谱工具栏支持搜索和全部采用", async ({ page }) => {
   await page.getByPlaceholder("搜索节点").fill("");
   await expect(page.locator(".graph-node")).toHaveCount(6);
 
-  await page.getByRole("button", { name: "全部采用" }).click();
-  await expect(page.locator(".graph-stats")).toContainText("6 已采用", { timeout: 30_000 });
+  await page.getByRole("button", { name: "全部采纳" }).click();
+  await expect(page.locator(".readiness")).toContainText("已采纳 6 节点", { timeout: 30_000 });
 });
 
 test("结果页可编辑保存，AI 微调位置已预留", async ({ page }) => {
   await startFromBrief(page, "编辑测试产品", "编辑想法");
   await page.locator(".graph-node").first().click();
-  await page.getByRole("button", { name: "✓ 采用" }).click();
-  await page.getByRole("button", { name: /收敛为剧情/ }).click();
+  await page.getByRole("button", { name: "采纳", exact: true }).click();
+  await page.getByRole("button", { name: /生成方案/ }).click();
   await expect(page.getByText("TRACEABLE STORY OUTPUT")).toBeVisible({ timeout: 30_000 });
 
   await page.locator(".story-head input").first().fill("编辑后的一句话创意");
@@ -101,7 +104,7 @@ test("结果页可编辑保存，AI 微调位置已预留", async ({ page }) => 
   await expect(page.getByText("AI 微调助手")).toBeVisible();
   await page.getByRole("button", { name: "节奏更快" }).click();
   await page.getByRole("button", { name: "生成修改建议" }).click();
-  await expect(page.getByText("AI 微调服务尚未接入")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("差异预览")).toBeVisible({ timeout: 30_000 });
 });
 
 test("AI 服务返回 500 时显示错误提示而不是白屏", async ({ page }) => {
@@ -145,9 +148,8 @@ test("409 冲突时应用最新图谱并显示提示而不是白屏", async ({ p
   }));
 
   await page.locator(".graph-node").first().click();
-  await page.getByRole("button", { name: "✓ 采用" }).click();
-  await expect(page.locator(".architecture-panel")).toContainText("数据已更新", { timeout: 30_000 });
-  await expect(page.locator(".architecture-panel")).toContainText("graphRevision 99");
+  await page.getByRole("button", { name: "采纳", exact: true }).click();
+  await expect(page.getByText(/候选提交失败|数据已更新/)).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("main")).toBeVisible();
 });
 

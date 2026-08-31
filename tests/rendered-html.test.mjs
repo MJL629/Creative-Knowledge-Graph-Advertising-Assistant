@@ -7,6 +7,9 @@ let workerPromise;
 async function getWorker() {
   if (!workerPromise) {
     process.env.CREATIVE_MODEL_PROVIDER = "mock";
+    process.env.PERSISTENCE_PROVIDER = "memory";
+    process.env.WORKFLOW_CHECKPOINTER = "memory";
+    process.env.NODE_ENV = "test";
     const workerUrl = new URL("../dist/server/index.js", import.meta.url);
     workerUrl.searchParams.set("test", `${process.pid}`);
     workerPromise = import(workerUrl.href).then((module) => module.default);
@@ -52,21 +55,20 @@ test("server renders the creative graph application", async () => {
 });
 
 test("initial and growth routes are wired to their agent pipelines", async () => {
-  const [initialRoute, growthRoute, page, growthPipeline, client] = await Promise.all([
+  const [initialRoute, growthRoute, page, apiClient, growthPipeline] = await Promise.all([
     readFile(new URL("../app/api/graph/diverge/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/graph/grow/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../lib/agents/growth-pipeline.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/client/api-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/agents/growth-pipeline.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(initialRoute, /getCreativeAgentGateway/);
   assert.match(growthRoute, /getCreativeAgentGateway/);
-  assert.match(client, /\/api\/workflow\/start/);
-  assert.match(client, /\/api\/workflow\/resume/);
-  assert.match(page, /startWorkflow as apiStartWorkflow/);
-  assert.match(page, /resumeWorkflow as apiResumeWorkflow/);
-  assert.doesNotMatch(page, /fetch\(/);
+  assert.match(page, /apiStartWorkflow/);
+  assert.match(page, /apiResumeWorkflow/);
+  assert.match(apiClient, /"\/api\/workflow\/start"/);
+  assert.match(apiClient, /"\/api\/workflow\/resume"/);
   assert.match(growthPipeline, /supervisorAgent/);
   assert.match(growthPipeline, /creativeAgent/);
   assert.match(growthPipeline, /criticAgent/);
@@ -102,19 +104,35 @@ test("mock provider exists and is routed (PRD 9.1 离线演示)", async () => {
 });
 
 test("session persistence is wired (FR-11)", async () => {
-  const [page, client] = await Promise.all([
+  const [page, apiClient] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/client/api-client.ts", import.meta.url), "utf8"),
   ]);
   assert.match(page, /localStorage\.getItem/);
   assert.match(page, /localStorage\.setItem/);
-  assert.match(client, /\/api\/projects/);
-  assert.match(client, /\/api\/graph\/commit/);
+  assert.match(apiClient, /\/api\/projects/);
+  assert.match(apiClient, /\/api\/graph\/commit/);
   assert.doesNotMatch(page, /localStorage\.setItem\(SESSION_KEY, JSON\.stringify/);
   // 两种删除（FR-09）与节点编辑（FR-04）存在
   assert.match(page, /deleteNodeOnly/);
   assert.match(page, /deleteCascade/);
   assert.match(page, /saveEditNode/);
+  // Fresh browser-only candidates must be committed before grow/relation
+  // workflows ask the server repository to resolve their IDs.
+  assert.match(page, /commitPendingCandidatesIfNeeded/);
+  assert.match(page, /await commitPendingCandidatesIfNeeded\(\)/);
+});
+
+test("prototype-first story optimization route and diff UI are wired", async () => {
+  const [route, page] = await Promise.all([
+    readFile(new URL("../app/api/graph/optimize/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/client/api-client.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(route, /callDeepSeekJson/);
+  assert.match(page, /AI 微调助手/);
+  assert.match(page, /generateAiDiff/);
+  assert.match(page, /applyAiDiff/);
 });
 
 test("needs_review status and propagation wired (FR-12 / PRD 5.2)", async () => {
@@ -150,6 +168,22 @@ test("node fields and layout wired (PRD 7.1 / FR-03)", async () => {
   // 拖拽与层级整理
   assert.match(page, /setDragState/);
   assert.match(page, /autoLayout/);
+  assert.match(page, /const py = event\.clientY - canvas\.top/);
+  assert.doesNotMatch(page, /event\.clientY - canvas\.top\) \* 650/);
+  assert.match(page, /requestedParentExists \? candidate\.parentRef : parent\.id/);
+  assert.match(page, /Math\.ceil\(layerNodes\.length \/ columns\)/);
+  // 新一轮首图必须使用空项目，避免首次“采用”时合并数据库中的旧图谱。
+  assert.match(page, /const activeProjectId = await ensureProject\(true\)/);
+  assert.match(page, /if \(projectId && !createFresh\)/);
+  assert.match(page, /isLoadingRelations\) return/);
+  assert.match(page, /growthPosition\(parent, additions\.length/);
+  assert.match(page, /if \(pendingCandidateIdsRef\.current\.size > 0\)/);
+  assert.match(page, /候选位置已更新 · 采用时保存/);
+  assert.match(page, /applyServerGraph\(error\.details\.snapshot as GraphSnapshot, true\)/);
+  assert.match(page, /服务端提交结果缺少生长候选，已保留本地节点，请重试/);
+  assert.match(page, /applyServerGraph\(snapshot, pendingCandidateIdsRef\.current\.size > 0\)/);
+  assert.match(page, /commitOperations\(pendingOperations, projectId, conflictSnapshot\.revision\)/);
+  assert.match(page, /Workflow revision 已更新/);
 });
 
 test("project API supports create, read, update, list, delete and 404", async () => {

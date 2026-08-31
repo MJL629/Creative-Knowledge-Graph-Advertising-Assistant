@@ -732,18 +732,24 @@ export default function Home() {
     };
   }
 
-  function applyServerGraph(snapshot: GraphSnapshot) {
+  function applyServerGraph(snapshot: GraphSnapshot, preservePending = false) {
     const graph = toUiGraph(snapshot);
-    setNodes(graph.nodes);
+    const currentNodes = nodesRef.current;
+    const serverNodeIds = new Set(graph.nodes.map((node) => node.id));
+    const localPending = preservePending
+      ? currentNodes.filter((node) => pendingCandidateIdsRef.current.has(node.id) && !serverNodeIds.has(node.id))
+      : [];
+    const nextNodes = [...graph.nodes, ...localPending];
+    setNodes(nextNodes);
     setEdges(graph.edges);
     setRevision(graph.revision);
-    nodesRef.current = graph.nodes;
-    pendingCandidateIdsRef.current = new Set();
+    nodesRef.current = nextNodes;
+    if (!preservePending) pendingCandidateIdsRef.current = new Set();
   }
 
-  async function ensureProject() {
+  async function ensureProject(createFresh = false) {
     const brief = currentBrief();
-    if (projectId) {
+    if (projectId && !createFresh) {
       try {
         await updateProject(projectId, { name: product, brief });
         return projectId;
@@ -758,20 +764,20 @@ export default function Home() {
     return created.id;
   }
 
-  async function commitOperations(operations: GraphOperation[], targetProjectId = projectId) {
+  async function commitOperations(operations: GraphOperation[], targetProjectId = projectId, expectedRevision = revision) {
     if (!targetProjectId) throw new Error("请先创建项目");
     try {
       const snapshot = await apiCommitGraph({
         projectId: targetProjectId,
-        expectedRevision: revision,
-        operationId: await operationIdFor(revision, operations),
+        expectedRevision,
+        operationId: await operationIdFor(expectedRevision, operations),
         operations,
       });
-      applyServerGraph(snapshot);
+      applyServerGraph(snapshot, pendingCandidateIdsRef.current.size > 0);
       return snapshot;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409 && error.details?.snapshot) {
-        applyServerGraph(error.details.snapshot as GraphSnapshot);
+        applyServerGraph(error.details.snapshot as GraphSnapshot, pendingCandidateIdsRef.current.size > 0);
       }
       throw error;
     }
@@ -805,7 +811,16 @@ export default function Home() {
         threadId,
         decision: { action: "commit", operations },
       });
-      if (result.graphSnapshot) applyServerGraph(result.graphSnapshot);
+      if (result.graphSnapshot) {
+        const addedNodeIds = operations
+          .filter((operation): operation is Extract<GraphOperation, { type: "ADD_NODE" }> => operation.type === "ADD_NODE")
+          .map((operation) => String(operation.node.id));
+        const snapshotNodeIds = new Set(result.graphSnapshot.nodes.map((node) => node.id));
+        if (addedNodeIds.some((nodeId) => !snapshotNodeIds.has(nodeId))) {
+          throw new Error("服务端提交结果缺少生长候选，已保留本地节点，请重试");
+        }
+        applyServerGraph(result.graphSnapshot);
+      }
       setWorkflowThreadId(null);
       workflowThreadIdRef.current = null;
       setPendingCandidateIds(new Set());
@@ -813,7 +828,8 @@ export default function Home() {
       return result;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409 && error.details?.snapshot) {
-        applyServerGraph(error.details.snapshot as GraphSnapshot);
+        applyServerGraph(error.details.snapshot as GraphSnapshot, true);
+        (error as ApiError & { conflictSnapshot?: GraphSnapshot }).conflictSnapshot = error.details.snapshot as GraphSnapshot;
       }
       throw error;
     }
@@ -825,7 +841,7 @@ export default function Home() {
     setAgentTrace([]);
     setRequest("四 Agent 编排运行中…");
     try {
-      const activeProjectId = await ensureProject();
+      const activeProjectId = await ensureProject(true);
       const workflow = await startWorkflow({ projectId: activeProjectId, intent: "start", needRag: true });
       const result = workflow.candidateResult as { candidates: DivergenceCandidate[]; trace?: AgentTrace[]; repairCount: number };
       if (!result?.candidates?.length) throw new Error("Workflow 未返回候选");
@@ -868,11 +884,28 @@ export default function Home() {
 
   async function updateStatus(id: string, status: Status) {
     if (pendingCandidateIds.has(id) && workflowThreadId) {
+      const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
+      const pendingOperations = pendingNodes.map((node) => addNodeOperation(node, node.id === id ? status : node.status));
       try {
-        const pendingNodes = nodes.filter((node) => pendingCandidateIds.has(node.id));
-        await resumeWorkflow(pendingNodes.map((node) => addNodeOperation(node, node.id === id ? status : node.status)));
+        await resumeWorkflow(pendingOperations);
         setRequest(`Workflow 已恢复 · ${status} · Graph Commit 完成`);
       } catch (error) {
+        const conflictSnapshot = (error as ApiError & { conflictSnapshot?: GraphSnapshot }).conflictSnapshot;
+        if (conflictSnapshot) {
+          try {
+            await commitOperations(pendingOperations, projectId, conflictSnapshot.revision);
+            setWorkflowThreadId(null);
+            workflowThreadIdRef.current = null;
+            setPendingCandidateIds(new Set());
+            pendingCandidateIdsRef.current = new Set();
+            localStorage.removeItem(THREAD_KEY);
+            setRequest(`Workflow revision 已更新 · ${status} · 候选已直接提交`);
+            return;
+          } catch (fallbackError) {
+            setRequest(`候选提交失败 · ${fallbackError instanceof Error ? fallbackError.message : "未知错误"}`);
+            return;
+          }
+        }
         setRequest(`Workflow 提交失败 · ${error instanceof Error ? error.message : "未知错误"}`);
       }
       return;
@@ -1015,21 +1048,32 @@ export default function Home() {
     });
     const depths = [...byDepth.keys()].sort((a, b) => a - b);
     const positionMap = new Map<string, { x: number; y: number }>();
-    depths.forEach((depth, layerIndex) => {
+    let rowOffset = 0;
+    depths.forEach((depth) => {
       const layerNodes = byDepth.get(depth)!;
-      const span = layerNodes.length > 1 ? 760 / (layerNodes.length - 1) : 0;
+      const columns = 7;
       layerNodes.forEach((node, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
         positionMap.set(node.id, {
-          x: layerNodes.length > 1 ? 80 + index * span : 416,
-          y: 225 + layerIndex * 132,
+          x: layerNodes.length === 1 ? 416 : 25 + column * 135,
+          y: 245 + (rowOffset + row) * 125,
         });
       });
+      rowOffset += Math.max(1, Math.ceil(layerNodes.length / columns));
     });
+    const arrangedNodes = nodes.map((node) => ({ ...node, ...positionMap.get(node.id) }));
+    nodesRef.current = arrangedNodes;
+    setNodes(arrangedNodes);
+    if (pendingCandidateIdsRef.current.size > 0) {
+      setRequest("layout.auto · 候选布局已更新 · 采用时保存");
+      return;
+    }
     try {
-      await commitOperations(nodes.map((node) => ({
+      await commitOperations(arrangedNodes.map((node) => ({
         type: "UPDATE_NODE" as const,
         nodeId: node.id,
-        patch: { position: positionMap.get(node.id) },
+        patch: { position: { x: node.x, y: node.y } },
       })));
       setRequest("layout.auto · 按层级整理完成 · 已提交");
     } catch (error) {
@@ -1199,6 +1243,10 @@ export default function Home() {
     setDragState(null);
     setTimeout(() => { movedRef.current = false; }, 0);
     if (!movedNode) return;
+    if (pendingCandidateIdsRef.current.size > 0) {
+      setRequest("layout.drag · 候选位置已更新 · 采用时保存");
+      return;
+    }
     try {
       await commitOperations([{ type: "UPDATE_NODE", nodeId: movedNode.id, patch: { position: { x: movedNode.x, y: movedNode.y } } }]);
     } catch (error) {
@@ -1284,6 +1332,7 @@ export default function Home() {
       result.candidates.slice(0, growthCount).forEach((candidate) => {
         const currentNodes = nodesRef.current.length ? nodesRef.current : nodes;
         const position = growthPosition(parent, additions.length, [...currentNodes, ...additions]);
+        const requestedParentExists = [...currentNodes, ...additions].some((node) => node.id === candidate.parentRef);
         additions.push({
           id: `node_${crypto.randomUUID()}`,
           title: candidate.title,
@@ -1293,7 +1342,7 @@ export default function Home() {
           status: "candidate",
           x: position.x,
           y: position.y,
-          parentId: candidate.parentRef,
+          parentId: requestedParentExists ? candidate.parentRef : parent.id,
           depth: (parent.depth || 1) + 1,
           provenance: `DeepSeek · graph.grow.v2 · ${candidate.rationale}`,
           growthMode: candidate.growthMode,
@@ -1337,18 +1386,38 @@ export default function Home() {
         setRelationCandidates([]);
         return;
       }
-      const id = `edge-${Date.now()}`;
-      setEdges((current) => [...current, { id, source: relationSource, target: node.id, label: "触发并推动", type: "semantic", direction: "forward", status: "pending" }]);
+      const sourceId = relationSource;
+      setRelationSource(null);
+      void prepareRelationDraft(sourceId, node.id);
+      return;
+    }
+    setSelectedId(node.id);
+  }
+
+  async function prepareRelationDraft(sourceId: string, targetId: string) {
+    setIsLoadingRelations(true);
+    setRelationError("");
+    try {
+      // Persist paused candidates before creating the local draft. A server
+      // snapshot returned by this step would otherwise erase the new edge and
+      // detach the relation editor before the user can confirm it.
+      await commitPendingCandidatesIfNeeded();
+      const sourceNode = nodesRef.current.find((node) => node.id === sourceId);
+      const targetNode = nodesRef.current.find((node) => node.id === targetId);
+      if (!sourceNode || !targetNode) throw new Error("端点节点不存在");
+      const id = "edge-" + Date.now();
+      setEdges((current) => [...current, { id, source: sourceId, target: targetId, label: "触发并推动", type: "semantic", direction: "forward", status: "pending" }]);
       setEditingEdgeId(id);
       setDraftEdgeId(id);
       setDraftRelation({ label: "触发并推动", direction: "forward" });
       setRelationCandidates([]);
-      setRelationSource(null);
       const token = ++relationLoadTokenRef.current;
-      relationLoadRef.current = loadRelationCandidates(relationSource, node.id, id, token);
-      return;
+      relationLoadRef.current = loadRelationCandidates(sourceId, targetId, id, token);
+    } catch (error) {
+      setRelationError(error instanceof Error ? error.message : "关系端点准备失败");
+      setRequest(`关系创建失败 · ${error instanceof Error ? error.message : "未知错误"}`);
+      setIsLoadingRelations(false);
     }
-    setSelectedId(node.id);
   }
 
   async function loadRelationCandidates(sourceId: string, targetId: string, edgeId?: string, token = relationLoadTokenRef.current) {
@@ -1363,10 +1432,8 @@ export default function Home() {
     setIsLoadingRelations(true);
     setRelationError("");
     try {
-      await commitPendingCandidatesIfNeeded();
-      if (token !== relationLoadTokenRef.current) return;
-      const sourceNode = nodes.find((n) => n.id === sourceId);
-      const targetNode = nodes.find((n) => n.id === targetId);
+      const sourceNode = nodesRef.current.find((n) => n.id === sourceId);
+      const targetNode = nodesRef.current.find((n) => n.id === targetId);
       if (!sourceNode || !targetNode) throw new Error("端点节点不存在");
       const workflow = await startWorkflow({ intent: "relations", sourceNodeId: sourceId, targetNodeId: targetId, needRag: false });
       if (token !== relationLoadTokenRef.current) return;
@@ -1728,7 +1795,12 @@ export default function Home() {
             })}
             {visibleNodes.map((node) => (
               <div key={node.id} role="button" tabIndex={0}
-                onClick={(event) => { event.stopPropagation(); if (!movedRef.current) nodeClick(node); }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  // Relation targets must remain reliably clickable even if a
+                  // preceding pointer move left the drag guard set.
+                  if (relationSource || !movedRef.current) nodeClick(node);
+                }}
                 onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") nodeClick(node); }}
                 onPointerDown={(event) => startNodeDrag(event, node.id)}
                 onPointerMove={(event) => moveNodeDrag(event, node.id)}

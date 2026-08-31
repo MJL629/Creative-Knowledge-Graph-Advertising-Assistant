@@ -20,9 +20,11 @@ type RuntimeDependencies = {
 
 export class WorkflowRuntime {
   private readonly workflow;
+  private readonly checkpointerProvider: WorkflowCheckpointerProvider;
 
   constructor(dependencies: RuntimeDependencies) {
     this.workflow = createCreativeWorkflow(dependencies);
+    this.checkpointerProvider = dependencies.checkpointerProvider;
   }
 
   private config(threadId: string) {
@@ -82,5 +84,9 @@ export class WorkflowRuntime {
 
   async getState(threadId: string): Promise<WorkflowPublicState> {
     return this.publicState(threadId);
+  }
+
+  async close() {
+    await this.checkpointerProvider.close?.();
   }
 }

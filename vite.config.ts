@@ -18,6 +18,13 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  // Forward explicit runner/CI overrides into the Workers binding. Without
+  // this, Playwright's memory/mock environment is hidden behind local `.env`
+  // values loaded by Miniflare.
+  vars: Object.fromEntries(
+    ["PERSISTENCE_PROVIDER", "WORKFLOW_CHECKPOINTER", "CREATIVE_MODEL_PROVIDER"]
+      .flatMap((key) => process.env[key] ? [[key, process.env[key] as string]] : []),
+  ),
   d1_databases: d1
     ? [
         {

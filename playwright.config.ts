@@ -21,6 +21,7 @@ export default defineConfig({
       CREATIVE_MODEL_PROVIDER: "mock",
       PERSISTENCE_PROVIDER: "memory",
       WORKFLOW_CHECKPOINTER: "memory",
+      CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false",
     },
   },
 });

@@ -178,15 +178,17 @@ export class PostgresProjectRepository implements ProjectRepository {
       if (error instanceof AppError) throw error;
       const databaseError = typeof error === "object" && error ? error as Record<string, unknown> : undefined;
       const databaseCode = databaseError?.code ? String(databaseError.code) : undefined;
+      const cause = error instanceof Error ? error.message : String(error);
       throw new AppError(
         ERROR_CODES.INTERNAL_ERROR,
         "PostgreSQL persistence is unavailable",
         503,
-        databaseCode ? {
-          databaseCode,
+        {
+          ...(databaseCode ? { databaseCode } : {}),
+          cause,
           ...(databaseError?.constraint_name ? { constraint: String(databaseError.constraint_name) } : {}),
           ...(databaseError?.detail ? { detail: String(databaseError.detail) } : {}),
-        } : undefined,
+        },
       );
     }
   }

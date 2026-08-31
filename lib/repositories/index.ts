@@ -6,11 +6,10 @@ import { PostgresProjectRepository } from "./postgres-project-repository";
 import type { ProjectRepository } from "./project-repository";
 
 const memoryRepository = new MemoryProjectRepository();
-const postgresRepositories = new Map<string, PostgresProjectRepository>();
 
 async function resolveRepository(): Promise<ProjectRepository> {
   const env = await getRuntimeEnv();
-  const provider = String(env.PERSISTENCE_PROVIDER ?? "memory").toLowerCase();
+  const provider = String(env.PERSISTENCE_PROVIDER ?? "postgres").toLowerCase();
   if (provider === "memory") {
     if (env.NODE_ENV === "production") {
       throw new AppError(ERROR_CODES.INTERNAL_ERROR, "Production requires PERSISTENCE_PROVIDER=postgres", 503);
@@ -25,24 +24,31 @@ async function resolveRepository(): Promise<ProjectRepository> {
   if (!databaseUrl) {
     throw new AppError(ERROR_CODES.INTERNAL_ERROR, "DATABASE_URL is required when PERSISTENCE_PROVIDER=postgres", 503);
   }
-  let selected = postgresRepositories.get(databaseUrl);
-  if (!selected) {
-    selected = new PostgresProjectRepository(databaseUrl);
-    postgresRepositories.set(databaseUrl, selected);
+  // Cloudflare Workers bind I/O objects to the request that created them.
+  // Never cache a postgres client across requests; memory remains the explicit
+  // process-local test fallback.
+  return new PostgresProjectRepository(databaseUrl, { max: 1 });
+}
+
+async function withRepository<T>(operation: (selected: ProjectRepository) => Promise<T>): Promise<T> {
+  const selected = await resolveRepository();
+  try {
+    return await operation(selected);
+  } finally {
+    if (selected instanceof PostgresProjectRepository) await selected.close();
   }
-  return selected;
 }
 
 const repository: ProjectRepository = {
-  async listProjects() { return (await resolveRepository()).listProjects(); },
-  async createProject(input: { name: string; brief: CreativeBrief }) { return (await resolveRepository()).createProject(input); },
-  async getProject(projectId: string) { return (await resolveRepository()).getProject(projectId); },
-  async updateProject(projectId: string, patch: { name?: string; brief?: CreativeBrief }) { return (await resolveRepository()).updateProject(projectId, patch); },
-  async deleteProject(projectId: string) { return (await resolveRepository()).deleteProject(projectId); },
-  async getGraph(projectId: string) { return (await resolveRepository()).getGraph(projectId); },
-  async commitGraph(input: GraphCommitRequest) { return (await resolveRepository()).commitGraph(input); },
-  async listStoryVersions(projectId: string) { return (await resolveRepository()).listStoryVersions(projectId); },
-  async saveStoryVersion(input: { projectId: string; graphRevision: number; content: unknown }) { return (await resolveRepository()).saveStoryVersion(input); },
+  async listProjects() { return withRepository((selected) => selected.listProjects()); },
+  async createProject(input: { name: string; brief: CreativeBrief }) { return withRepository((selected) => selected.createProject(input)); },
+  async getProject(projectId: string) { return withRepository((selected) => selected.getProject(projectId)); },
+  async updateProject(projectId: string, patch: { name?: string; brief?: CreativeBrief }) { return withRepository((selected) => selected.updateProject(projectId, patch)); },
+  async deleteProject(projectId: string) { return withRepository((selected) => selected.deleteProject(projectId)); },
+  async getGraph(projectId: string) { return withRepository((selected) => selected.getGraph(projectId)); },
+  async commitGraph(input: GraphCommitRequest) { return withRepository((selected) => selected.commitGraph(input)); },
+  async listStoryVersions(projectId: string) { return withRepository((selected) => selected.listStoryVersions(projectId)); },
+  async saveStoryVersion(input: { projectId: string; graphRevision: number; content: unknown }) { return withRepository((selected) => selected.saveStoryVersion(input)); },
 };
 
 export function getProjectRepository(): ProjectRepository {

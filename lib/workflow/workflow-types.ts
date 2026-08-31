@@ -50,4 +50,5 @@ export interface WorkflowCheckpointerProvider {
   getCheckpointer(): BaseCheckpointSaver;
   readonly durable: boolean;
   readonly name: string;
+  close?(): Promise<void>;
 }

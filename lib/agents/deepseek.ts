@@ -3,6 +3,28 @@ import { callMockJson, type ChatMessage as MockMessage } from "./mock-llm";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
+export function parseModelJson<T>(content: string): T {
+  const trimmed = content.trim();
+  const candidates = [trimmed];
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1];
+  if (fenced) candidates.push(fenced.trim());
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(trimmed.slice(objectStart, objectEnd + 1));
+  const arrayStart = trimmed.indexOf("[");
+  const arrayEnd = trimmed.lastIndexOf("]");
+  if (arrayStart >= 0 && arrayEnd > arrayStart) candidates.push(trimmed.slice(arrayStart, arrayEnd + 1));
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // Try the next normalized representation.
+    }
+  }
+  const looksTruncated = (objectStart >= 0 && objectEnd < objectStart) || (arrayStart >= 0 && arrayEnd < arrayStart);
+  throw new Error(looksTruncated ? "DeepSeek 返回的 JSON 被截断，请重试或提高 OPENAI_MAX_TOKENS" : "DeepSeek 返回内容不是合法 JSON");
+}
+
 type DeepSeekEnvironment = {
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
@@ -25,42 +47,6 @@ function waitForRetry(delayMs: number, signal?: AbortSignal) {
       reject(signal.reason);
     }, { once: true });
   });
-}
-
-function extractJsonContent(content: string): unknown {
-  const trimmed = content.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // 继续尝试从 Markdown 代码块或首尾 JSON 片段中恢复。
-  }
-  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) {
-    try {
-      return JSON.parse(fence[1].trim());
-    } catch {
-      // 继续尝试普通 JSON 片段。
-    }
-  }
-  const objectStart = trimmed.indexOf("{");
-  const objectEnd = trimmed.lastIndexOf("}");
-  if (objectStart >= 0 && objectEnd > objectStart) {
-    try {
-      return JSON.parse(trimmed.slice(objectStart, objectEnd + 1));
-    } catch {
-      // 继续尝试数组片段。
-    }
-  }
-  const arrayStart = trimmed.indexOf("[");
-  const arrayEnd = trimmed.lastIndexOf("]");
-  if (arrayStart >= 0 && arrayEnd > arrayStart) {
-    try {
-      return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
-    } catch {
-      // 无法恢复为合法 JSON。
-    }
-  }
-  throw new Error("DeepSeek 返回内容不是合法 JSON");
 }
 
 /**
@@ -120,9 +106,10 @@ export async function callDeepSeekJson<T>(messages: ChatMessage[], signal?: Abor
     throw new Error(`DeepSeek 请求失败 (${response?.status ?? "network"}): ${detail.slice(0, 300)}`);
   }
 
-  const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-  const content = payload.choices?.[0]?.message?.content;
+  const payload = await response.json() as { choices?: Array<{ finish_reason?: string; message?: { content?: string } }> };
+  const choice = payload.choices?.[0];
+  const content = choice?.message?.content;
   if (!content) throw new Error("DeepSeek 返回了空内容");
-
-  return extractJsonContent(content) as T;
+  if (choice?.finish_reason === "length") throw new Error("DeepSeek 返回的 JSON 被截断，请提高 OPENAI_MAX_TOKENS 后重试");
+  return parseModelJson<T>(content);
 }

@@ -13,7 +13,8 @@ export async function POST(request: Request) {
     const intent = String(body.intent ?? "start") as WorkflowIntent;
     if (!projectId) return errorJson(ERROR_CODES.VALIDATION_ERROR, "projectId is required", 400, undefined, requestId);
     if (!intents.has(intent)) return errorJson(ERROR_CODES.VALIDATION_ERROR, "Unsupported workflow intent", 400, undefined, requestId);
-    const state = await (await getWorkflowRuntime()).start({
+    const runtime = await getWorkflowRuntime();
+    const state = await runtime.start({
       projectId,
       requestId,
       threadId: typeof body.threadId === "string" ? body.threadId : undefined,
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
       candidateCount: body.candidateCount === 3 ? 3 : body.candidateCount === 2 ? 2 : undefined,
       growthInstruction: typeof body.growthInstruction === "string" ? body.growthInstruction : undefined,
     });
+    await runtime.close();
     return okJson(state, { status: 202 }, requestId);
   } catch (error) {
     return routeError(error, ERROR_CODES.INTERNAL_ERROR, 500, requestId);

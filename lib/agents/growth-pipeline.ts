@@ -1,4 +1,9 @@
 import { callDeepSeekJson } from "./deepseek";
+import {
+  CASE_SKILL_USAGE_RULES,
+  selectCreativeCaseSkills,
+  type CaseSkillContext,
+} from "./case-skills";
 import type { BriefInput } from "./graph-pipeline";
 
 type Category = "creative_element" | "motivation_conflict" | "story_event";
@@ -102,8 +107,8 @@ function buildContext(input: GrowthRequest): GrowthContext {
 async function supervisorAgent(input: GrowthRequest, context: GrowthContext, signal?: AbortSignal) {
   // Structured Decision（技术设计 4.1）：intent=grow 由端点确定，LLM 规划上下文与风险
   const result = await callDeepSeekJson<{ need_memory?: boolean; need_rag?: boolean; need_external_tool?: boolean; context_plan?: string[]; risk_flags?: string[] }>([
-    { role: "system", content: `${sharedSystem}\n你是 Supervisor Agent。只规划本次局部生长上下文，不生成候选。intent=grow、next_agent=creative 已由路由层确定，你负责规划 context_plan、评估风险和判断是否需要 Memory/RAG/Tool。` },
-    { role: "user", content: JSON.stringify({ task: "graph.grow.v2", brief: input.brief, growth_intent: input.growthIntent, subject_contract: input.subjectContract, selected_node: context.selectedNode, ancestor_path: context.ancestorPath, accepted_neighborhood: context.acceptedNeighborhood, excluded_memory: context.excludedMemory, output: { need_memory: "boolean", need_rag: "boolean", need_external_tool: "boolean", context_plan: ["string"], risk_flags: ["string"] } }) },
+    { role: "system", content: `${sharedSystem}\n你是 Supervisor Agent。只规划本次局部生长上下文，不生成候选。intent=grow、next_agent=creative 已由路由层确定。案例参考由独立 Case Skill Selector 负责；你只规划 context_plan、评估风险和判断是否需要 Memory/Tool。` },
+    { role: "user", content: JSON.stringify({ task: "graph.grow.v2", brief: input.brief, growth_intent: input.growthIntent, subject_contract: input.subjectContract, selected_node: context.selectedNode, ancestor_path: context.ancestorPath, accepted_neighborhood: context.acceptedNeighborhood, excluded_memory: context.excludedMemory, output: { need_memory: "boolean", need_external_tool: "boolean", context_plan: ["string"], risk_flags: ["string"] } }) },
   ], signal);
   return {
     intent: "grow" as const,
@@ -111,7 +116,7 @@ async function supervisorAgent(input: GrowthRequest, context: GrowthContext, sig
     next_agent: "creative" as const,
     need_critic: true,
     need_memory: Boolean(result.need_memory),
-    need_rag: Boolean(result.need_rag),
+    need_rag: false,
     need_external_tool: Boolean(result.need_external_tool),
     need_user_confirmation: false,
     context_plan: Array.isArray(result.context_plan) && result.context_plan.length ? result.context_plan.map(String) : ["Global Brief", "主体契约", "祖先路径", "已采用邻域", "排除记忆"],
@@ -140,7 +145,14 @@ function normalizeCandidates(raw: GrowthCandidate[], input: GrowthRequest, conte
   })) : [];
 }
 
-async function creativeAgent(input: GrowthRequest, context: GrowthContext, plan: { context_plan: string[]; risk_flags: string[] }, repair: { nodes: GrowthCandidate[]; issues: CriticResult["issues"] } | null, signal?: AbortSignal) {
+async function creativeAgent(
+  input: GrowthRequest,
+  context: GrowthContext,
+  plan: { context_plan: string[]; risk_flags: string[] },
+  caseSkillContext: CaseSkillContext,
+  repair: { nodes: GrowthCandidate[]; issues: CriticResult["issues"] } | null,
+  signal?: AbortSignal,
+) {
   const result = await callDeepSeekJson<{ nodes: GrowthCandidate[] }>([
     { role: "system", content: `${sharedSystem}\n你是 Creative Agent。只生成局部生长候选。新奇性不能通过更换主体获得；剧情事件必须有行动者，冲突必须围绕主体目标，创意元素必须说明如何支撑主体或产品。` },
     { role: "user", content: JSON.stringify({
@@ -150,6 +162,7 @@ async function creativeAgent(input: GrowthRequest, context: GrowthContext, plan:
       subject_contract: input.subjectContract,
       context_plan: plan.context_plan,
       risk_flags: plan.risk_flags,
+      case_skill_context: caseSkillContext,
       selected_node: context.selectedNode,
       expected_parent_ref: context.expectedParentRef,
       ancestor_path: context.ancestorPath,
@@ -163,6 +176,7 @@ async function creativeAgent(input: GrowthRequest, context: GrowthContext, plan:
         "标题不超过 18 个汉字",
         "actorRefs 和 productFeatureRefs 只能引用输入中存在的值",
         "如果存在叙事主体，冲突与事件必须保留主体能动性",
+        ...CASE_SKILL_USAGE_RULES,
       ],
       output: { nodes: [{ clientKey: "string", parentRef: "string", category: input.growthIntent.targetCategory, subtype: "string", title: "string", description: "string", attributes: {}, rationale: "string", actorRefs: ["existing node id"], productFeatureRefs: ["existing product feature"], subjectContinuity: { status: "anchored | needs_subject", score: "0-1", note: "string" } }] },
     }) },
@@ -191,10 +205,16 @@ function validateCandidates(nodes: GrowthCandidate[], input: GrowthRequest, cont
   return errors;
 }
 
-async function criticAgent(input: GrowthRequest, context: GrowthContext, nodes: GrowthCandidate[], signal?: AbortSignal): Promise<CriticResult> {
+async function criticAgent(
+  input: GrowthRequest,
+  context: GrowthContext,
+  nodes: GrowthCandidate[],
+  caseSkillContext: CaseSkillContext,
+  signal?: AbortSignal,
+): Promise<CriticResult> {
   const result = await callDeepSeekJson<Partial<CriticResult>>([
     { role: "system", content: `${sharedSystem}\n你是 Critic Agent。只审查主体漂移、广告目标遗忘、祖先路径矛盾、换词重复和隐性违反禁止内容。` },
-    { role: "user", content: JSON.stringify({ review_mode: "growth_candidate", brief: input.brief, subject_contract: input.subjectContract, ancestor_path: context.ancestorPath, accepted_neighborhood: context.acceptedNeighborhood, excluded_memory: context.excludedMemory, candidates: nodes, output: { pass: "boolean", issues: [{ clientKey: "string", severity: "warning | error", message: "string", repair_instruction: "string" }], summary: "string" } }) },
+    { role: "user", content: JSON.stringify({ review_mode: "growth_candidate", brief: input.brief, case_skill_context: caseSkillContext, cases_are_not_facts: true, subject_contract: input.subjectContract, ancestor_path: context.ancestorPath, accepted_neighborhood: context.acceptedNeighborhood, excluded_memory: context.excludedMemory, candidates: nodes, output: { pass: "boolean", issues: [{ clientKey: "string", severity: "warning | error", message: "string", repair_instruction: "string" }], summary: "string" } }) },
   ], signal);
   const issues = Array.isArray(result.issues) ? result.issues.map((issue) => ({ clientKey: String(issue.clientKey || ""), severity: issue.severity === "warning" ? "warning" as const : "error" as const, message: String(issue.message || "语义审查未通过"), repair_instruction: String(issue.repair_instruction || "保持主体与推广目标后局部修复") })) : [];
   return { pass: result.pass === true && issues.every((issue) => issue.severity !== "error"), issues, summary: String(result.summary || "生长候选语义审查完成") };
@@ -210,27 +230,45 @@ async function storyAgent(input: GrowthRequest, context: GrowthContext, nodes: G
 
 export async function runGrowthPipeline(input: GrowthRequest, signal?: AbortSignal) {
   const context = buildContext(input);
-  const trace: Array<{ agent: "Supervisor" | "Creative" | "Critic" | "Story"; status: "passed" | "repaired" | "waiting"; summary: string }> = [];
+  const trace: Array<{ agent: "Supervisor" | "CaseSkillSelector" | "Creative" | "Critic" | "Story"; status: "passed" | "repaired" | "waiting"; summary: string }> = [];
   const plan = await supervisorAgent(input, context, signal);
   trace.push({ agent: "Supervisor", status: "passed", summary: `构造 ${plan.context_plan.length} 层生长上下文` });
 
-  let nodes = await creativeAgent(input, context, plan, null, signal);
+  const caseSkillContext = await selectCreativeCaseSkills({
+    stage: "growth",
+    brief: input.brief,
+    taskContext: {
+      growth_intent: input.growthIntent,
+      selected_node: context.selectedNode,
+    },
+  }, signal);
+  trace.push({
+    agent: "CaseSkillSelector",
+    status: caseSkillContext.warning ? "repaired" : "passed",
+    summary: caseSkillContext.warning
+      ? caseSkillContext.warning
+      : caseSkillContext.selected.length
+      ? `选择案例模式：${caseSkillContext.selected.map((item) => item.title).join("、")}`
+      : caseSkillContext.selectionMode === "disabled" ? "案例技能已禁用" : "无匹配案例模式",
+  });
+
+  let nodes = await creativeAgent(input, context, plan, caseSkillContext, null, signal);
   let errors = validateCandidates(nodes, input, context);
   if (errors.length) throw new Error(`Growth Rule Validator 未通过：${errors.join("；")}`);
   trace.push({ agent: "Creative", status: "passed", summary: `生成 ${nodes.length} 个受控生长候选` });
 
-  let critic = await criticAgent(input, context, nodes, signal);
+  let critic = await criticAgent(input, context, nodes, caseSkillContext, signal);
   let repairs = 0;
   while (!critic.pass && repairs < 2) {
-    nodes = await creativeAgent(input, context, plan, { nodes, issues: critic.issues }, signal);
+    nodes = await creativeAgent(input, context, plan, caseSkillContext, { nodes, issues: critic.issues }, signal);
     errors = validateCandidates(nodes, input, context);
     if (errors.length) throw new Error(`Growth Repair 校验未通过：${errors.join("；")}`);
     repairs += 1;
-    critic = await criticAgent(input, context, nodes, signal);
+    critic = await criticAgent(input, context, nodes, caseSkillContext, signal);
   }
   trace.push({ agent: "Critic", status: repairs ? "repaired" : "passed", summary: critic.pass ? `主体一致性通过${repairs ? `，局部修复 ${repairs} 次` : ""}` : `达到修复上限：${critic.summary}` });
 
   const readiness = await storyAgent(input, context, nodes, signal);
   trace.push({ agent: "Story", status: "waiting", summary: `${readiness.status} · ${readiness.score} 分；采用后再更新正式图谱` });
-  return { baseRevision: input.graphRevision, candidates: nodes, critic, readiness, trace, repairCount: repairs, context: { ancestorPath: context.ancestorPath.map((node) => node.id), acceptedNeighborhood: context.acceptedNeighborhood.map((node) => node.id), excludedMemory: context.excludedMemory, narrativeSubjectIds: context.narrativeSubjects.map((node) => node.id) } };
+  return { baseRevision: input.graphRevision, caseSkillContext, candidates: nodes, critic, readiness, trace, repairCount: repairs, context: { ancestorPath: context.ancestorPath.map((node) => node.id), acceptedNeighborhood: context.acceptedNeighborhood.map((node) => node.id), excludedMemory: context.excludedMemory, narrativeSubjectIds: context.narrativeSubjects.map((node) => node.id) } };
 }

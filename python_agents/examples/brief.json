@@ -1,0 +1,15 @@
+{
+  "product": "疯狂水世界",
+  "knownInformation": "小程序多人休闲游戏，玩家在水上乐园使用水枪对战。",
+  "ideaFragments": [
+    "一位国王把超长水枪当作权杖",
+    "输掉挑战的人会被装进透明水球"
+  ],
+  "mustKeep": ["多人对战", "超长水枪", "清凉解压"],
+  "mustAvoid": ["血腥暴力", "复杂现实战争"],
+  "audience": "18-30岁休闲游戏用户",
+  "platform": "抖音",
+  "durationSeconds": 30,
+  "styles": ["荒诞反转", "网络感", "节奏快"],
+  "sellingPoints": ["多人同屏", "水枪对战", "随时开局"]
+}

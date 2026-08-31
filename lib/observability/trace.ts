@@ -36,7 +36,8 @@ class PostgresTraceSink implements QueryableTraceSink {
   }
 
   async record(trace: AgentTrace) {
-    await this.sql`
+    try {
+      await this.sql`
       INSERT INTO agent_traces (
         id, request_id, thread_id, project_id, agent, workflow_node, model,
         prompt_version, schema_version, started_at, ended_at, latency_ms,
@@ -48,19 +49,23 @@ class PostgresTraceSink implements QueryableTraceSink {
         ${trace.inputTokens ?? null}, ${trace.outputTokens ?? null}, ${trace.success}, ${trace.errorCode ?? null},
         ${trace.retryCount ?? 0}, ${trace.retrievalHitCount ?? null}
       )
-    `;
+      `;
+    } finally {
+      await this.sql.end({ timeout: 5 });
+    }
   }
 
   async list(query: TraceQuery) {
-    const limit = Math.max(1, Math.min(query.limit ?? 100, 500));
-    const rows = await this.sql<Record<string, unknown>[]>`
+    try {
+      const limit = Math.max(1, Math.min(query.limit ?? 100, 500));
+      const rows = await this.sql<Record<string, unknown>[]>`
       SELECT * FROM agent_traces
       WHERE (${query.requestId ?? null}::text IS NULL OR request_id = ${query.requestId ?? null})
         AND (${query.threadId ?? null}::text IS NULL OR thread_id = ${query.threadId ?? null})
         AND (${query.projectId ?? null}::text IS NULL OR project_id = ${query.projectId ?? null})
       ORDER BY started_at DESC LIMIT ${limit}
-    `;
-    return rows.map((row) => ({
+      `;
+      return rows.map((row) => ({
       id: String(row.id),
       requestId: row.request_id ? String(row.request_id) : undefined,
       threadId: row.thread_id ? String(row.thread_id) : undefined,
@@ -79,22 +84,19 @@ class PostgresTraceSink implements QueryableTraceSink {
       errorCode: row.error_code ? String(row.error_code) : undefined,
       retryCount: Number(row.retry_count ?? 0),
       retrievalHitCount: row.retrieval_hit_count === null ? undefined : Number(row.retrieval_hit_count),
-    }));
+      }));
+    } finally {
+      await this.sql.end({ timeout: 5 });
+    }
   }
 }
 
 const memorySink = new MemoryTraceSink();
-const postgresSinks = new Map<string, PostgresTraceSink>();
 
 async function getTraceSink(): Promise<QueryableTraceSink> {
   const env = await getRuntimeEnv();
-  if (String(env.PERSISTENCE_PROVIDER ?? "memory").toLowerCase() !== "postgres" || !env.DATABASE_URL) return memorySink;
-  let sink = postgresSinks.get(env.DATABASE_URL);
-  if (!sink) {
-    sink = new PostgresTraceSink(env.DATABASE_URL);
-    postgresSinks.set(env.DATABASE_URL, sink);
-  }
-  return sink;
+  if (String(env.PERSISTENCE_PROVIDER ?? "postgres").toLowerCase() !== "postgres" || !env.DATABASE_URL) return memorySink;
+  return new PostgresTraceSink(env.DATABASE_URL);
 }
 
 export async function traceCall<T>(
